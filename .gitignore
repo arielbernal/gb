@@ -1,0 +1,28 @@
+# Build artifacts
+**/build/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# Python
+venv/
+**/__pycache__/
+*.pyc
+
+# Claude Code
+.claude/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
