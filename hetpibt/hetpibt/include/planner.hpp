@@ -30,7 +30,8 @@ struct Planner {
   DistTable D;
   ReservationTable P;
   std::vector<float> tie_breakers;
-  std::unordered_set<int> goal_reached;  // agents at their goals
+  std::unordered_set<int> goal_reached;      // agents permanently at their goals
+  std::unordered_map<int, int> goal_time;   // agent_id -> step when goal reached
 
   // CORE (paper): elapsed counter — steps since last reaching goal, reset to 0
   std::vector<int> elapsed;
@@ -43,8 +44,10 @@ struct Planner {
   // EXTENSION: recent position history for anti-oscillation
   std::vector<std::deque<int>> recent_cells;
 
+  const bool goal_lock;  // permanently lock agents at goals (pibt_rs-style)
+
   Planner(const HetInstance* _ins, const Deadline* _deadline,
-          std::mt19937* _mt, int _verbose = 0);
+          std::mt19937* _mt, int _verbose = 0, bool _goal_lock = false);
   ~Planner();
 
   Solution solve(int max_timesteps = 1000);
@@ -83,4 +86,5 @@ struct Planner {
 // convenience entry point
 Solution solve(const HetInstance& ins, int verbose = 0,
                const Deadline* deadline = nullptr,
-               std::mt19937* MT = nullptr, int max_timesteps = 1000);
+               std::mt19937* MT = nullptr, int max_timesteps = 1000,
+               bool goal_lock = false);

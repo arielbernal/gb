@@ -34,6 +34,10 @@ int main(int argc, char* argv[])
       .help("swap x/y coords (match pypibt/pibt_rs het_bench convention)")
       .default_value(false)
       .implicit_value(true);
+  program.add_argument("--goal-lock")
+      .help("permanently lock agents at goals (pibt_rs-style)")
+      .default_value(false)
+      .implicit_value(true);
 
   try {
     program.parse_args(argc, argv);
@@ -51,6 +55,7 @@ int main(int argc, char* argv[])
   auto max_timesteps = program.get<int>("--max_timesteps");
   auto seed = program.get<int>("--seed");
   auto swap_xy = program.get<bool>("--swap-xy");
+  auto goal_lock = program.get<bool>("--goal-lock");
 
   // create instance
   auto ins = HetInstance(scen_file, map_file, swap_xy);
@@ -70,12 +75,13 @@ int main(int argc, char* argv[])
   // solve
   auto MT = std::mt19937(seed);
   auto deadline = Deadline(time_limit);
-  auto planner = Planner(&ins, &deadline, &MT, verbose);
+  auto planner = Planner(&ins, &deadline, &MT, verbose, goal_lock);
   auto sol = planner.solve(max_timesteps);
 
   // stats and log
-  print_stats(verbose, ins, planner.P, deadline.elapsed_ms());
-  make_log(ins, planner.P, output_file, deadline.elapsed_ms(), map_file, seed);
+  print_stats(verbose, ins, planner.P, deadline.elapsed_ms(), planner.goal_time);
+  make_log(ins, planner.P, output_file, deadline.elapsed_ms(), map_file, seed,
+           planner.goal_time);
 
   return 0;
 }

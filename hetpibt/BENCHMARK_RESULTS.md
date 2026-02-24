@@ -1,9 +1,11 @@
-# HetPIBT v1 Benchmark Results
+# HetPIBT Benchmark Results
 
-Date: 2026-02-23
-Tag: `hetpibt-v1-benchmark`
+## v2 (current) — Goal Locking
 
-## Setup
+Date: 2026-02-24
+Tag: `hetpibt-v2-benchmark`
+
+### Setup
 
 - **Map**: room-64-64-8 (64x64 base, scaled 10x to 640x640)
 - **Scenarios**: het_bench scen.0 through scen.9 (from pypibt)
@@ -13,10 +15,53 @@ Tag: `hetpibt-v1-benchmark`
 - **Grid model**: Non-overlapping tiling (paper Section IV-B, Eq. 1)
   - Fleet grid width = base_width / cell_size
   - Fleet cell (fx,fy) covers base cells [fx*cs, (fx+1)*cs) x [fy*cs, (fy+1)*cs)
-- **Our solver flags**: `--swap-xy` (matches pypibt/pibt_rs coordinate convention)
+- **Our solver flags**: `--swap-xy --goal-lock`
 - **pibt_rs flags**: map_scale=10, max_steps=500
 
-## Comparison Table
+### Comparison Table
+
+| Scen | N | pibt_rs goals | pibt_rs ms | pibt_rs make | Ours goals | Ours ms | Ours make | Notes |
+|------|---|:---:|---:|---:|:---:|---:|---:|-------|
+| 0 | 9 | 8/9 | 317 | 371 | **9/9** | **11** | **187** | |
+| 1 | 7 | 6/7 | 224 | 500* | **6/7** | **52** | 501* | goal overlap in scenario |
+| 2 | 7 | 6/7 | 92 | 105 | **7/7** | **7** | **49** | start/goal overlap |
+| 3 | 7 | 6/7 | 131 | 138 | **7/7** | **4** | **69** | |
+| 4 | 8 | 6/8 | 831 | 500* | **8/8** | **5** | **61** | |
+| 5 | 6 | 5/6 | 238 | 500* | **6/6** | **7** | **170** | |
+| 6 | 9 | 8/9 | 265 | 358 | **9/9** | **12** | **176** | start/goal overlap |
+| 7 | 9 | 8/9 | 227 | 133 | **9/9** | **5** | **80** | |
+| 8 | 9 | 8/9 | 302 | 500* | **9/9** | **8** | **148** | start/goal overlap |
+| 9 | 9->8 | 8/9 | 282 | 500* | **8/8** | **7** | **144** | 1 agent on wall (pypibt bug) |
+| **Total** | | **69/80** (86%) | | | **78/79** (99%) | | | |
+
+`*` = hit max timesteps without all goals reached.
+
+### Summary
+
+- **Goals reached**: ours 78/79 (98.7%) vs pibt_rs 69/80 (86.3%)
+- **Solve time**: ours 4-52ms vs pibt_rs 92-831ms (20-160x faster)
+- **Wins**: ours wins goals on 8/10 scenarios; tie on scen.1 (both 6/7) and scen.9
+
+### v2 Changes (from v1)
+
+- **Goal locking** (`--goal-lock`): permanently locks agents at their goals,
+  matching pibt_rs behavior. Other agents' BFS routes around locked agents.
+  Fixes scen.1 (5/7 → 6/7) and scen.7 makespan (95 → 80).
+- Goal locking is opt-in because it can cause regressions on non-biconnected
+  graphs where locked agents block narrow passages.
+
+---
+
+## v1 — Baseline
+
+Date: 2026-02-23
+Tag: `hetpibt-v1-benchmark`
+
+### Setup
+
+Same as v2 but without `--goal-lock`.
+
+### Comparison Table
 
 | Scen | N | pibt_rs goals | pibt_rs ms | pibt_rs make | Ours goals | Ours ms | Ours make | Notes |
 |------|---|:---:|---:|---:|:---:|---:|---:|-------|
@@ -31,8 +76,6 @@ Tag: `hetpibt-v1-benchmark`
 | 8 | 9 | 8/9 | 302 | 500* | **9/9** | **8** | **148** | start/goal overlap |
 | 9 | 9->8 | 8/9 | 282 | 500* | **8/8** | **7** | **144** | 1 agent on wall (pypibt bug) |
 | **Total** | | **69/80** (86%) | | | **77/79** (97%) | | | |
-
-`*` = hit max timesteps without all goals reached.
 
 ### Summary
 

@@ -98,7 +98,8 @@ def run_pibt_rs(scen_file, max_steps=500):
 def run_ours(scen_file, max_steps=500):
     """Run our solver directly on het_bench scenario with scaled map."""
     cmd = [OUR_SOLVER, "-m", SCALED_MAP, "-s", scen_file, "-v", "1",
-           "--max_timesteps", str(max_steps), "--swap-xy", "-o", os.devnull]
+           "--max_timesteps", str(max_steps), "--swap-xy", "--goal-lock",
+           "-o", os.devnull]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         output = result.stdout + result.stderr

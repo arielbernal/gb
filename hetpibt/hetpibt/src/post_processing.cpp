@@ -16,33 +16,37 @@ bool is_feasible_solution(const HetInstance& ins, const ReservationTable& P,
   return true;
 }
 
-int get_makespan(const ReservationTable& P, int N)
+int get_makespan(const ReservationTable& P, int N,
+                 const std::unordered_map<int, int>& goal_time)
 {
   int makespan = 0;
   for (int i = 0; i < N; ++i) {
-    auto ep = P.get_endpoint(i);
-    if (ep.end_time > makespan) makespan = ep.end_time;
+    auto gt = goal_time.find(i);
+    int t = (gt != goal_time.end()) ? gt->second : P.get_endpoint(i).end_time;
+    if (t > makespan) makespan = t;
   }
   return makespan;
 }
 
-int get_sum_of_costs(const ReservationTable& P, const HetInstance& ins)
+int get_sum_of_costs(const ReservationTable& P, const HetInstance& ins,
+                     const std::unordered_map<int, int>& goal_time)
 {
   int total = 0;
   for (uint i = 0; i < ins.N; ++i) {
-    auto ep = P.get_endpoint(i);
-    total += ep.end_time;
+    auto gt = goal_time.find(i);
+    total += (gt != goal_time.end()) ? gt->second : P.get_endpoint(i).end_time;
   }
   return total;
 }
 
 void print_stats(int verbose, const HetInstance& ins,
-                 const ReservationTable& P, double comp_time_ms)
+                 const ReservationTable& P, double comp_time_ms,
+                 const std::unordered_map<int, int>& goal_time)
 {
   auto N = static_cast<int>(ins.N);
   auto feasible = is_feasible_solution(ins, P, verbose);
-  auto makespan = get_makespan(P, N);
-  auto soc = get_sum_of_costs(P, ins);
+  auto makespan = get_makespan(P, N, goal_time);
+  auto soc = get_sum_of_costs(P, ins, goal_time);
 
   int goals_reached = 0;
   for (uint i = 0; i < ins.N; ++i) {
@@ -61,7 +65,8 @@ void print_stats(int verbose, const HetInstance& ins,
 
 void make_log(const HetInstance& ins, const ReservationTable& P,
               const std::string& output_file, double comp_time_ms,
-              const std::string& map_name, int seed)
+              const std::string& map_name, int seed,
+              const std::unordered_map<int, int>& goal_time)
 {
   std::ofstream log(output_file);
   if (!log) {
@@ -77,8 +82,8 @@ void make_log(const HetInstance& ins, const ReservationTable& P,
   log << "seed=" << seed << "\n";
   log << "solver=hetpibt\n";
   log << "comp_time(ms)=" << comp_time_ms << "\n";
-  log << "makespan=" << get_makespan(P, N) << "\n";
-  log << "sum_of_costs=" << get_sum_of_costs(P, ins) << "\n";
+  log << "makespan=" << get_makespan(P, N, goal_time) << "\n";
+  log << "sum_of_costs=" << get_sum_of_costs(P, ins, goal_time) << "\n";
 
   // --- fleet definitions ---
   // format: fleets=id:cell_size:velocity:grid_w:grid_h;...

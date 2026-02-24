@@ -32,6 +32,10 @@
  *     Without this, agents oscillate between the same 2-3 cells even with high
  *     priority — stuck_count fixes planning ORDER but not PATH SELECTION.
  *     Density-gated to avoid penalizing necessary revisits in crowded areas.
+ *   - Goal locking (--goal-lock): permanently locks agents at their goals,
+ *     matching pibt_rs behavior. Locked agents cannot be pushed; other agents'
+ *     BFS treats locked cells as impassable. Improves scenarios with overlapping
+ *     goal footprints but can cause regressions on non-biconnected graphs.
  */
 
 #include "../include/planner.hpp"
@@ -39,11 +43,12 @@
 #include <algorithm>
 
 Planner::Planner(const HetInstance* _ins, const Deadline* _deadline,
-                 std::mt19937* _mt, int _verbose)
+                 std::mt19937* _mt, int _verbose, bool _goal_lock)
     : ins(_ins),
       deadline(_deadline),
       MT(_mt),
       verbose(_verbose),
+      goal_lock(_goal_lock),
       N(_ins->N),
       V_size(_ins->base_grid.size()),
       D(*_ins),
@@ -242,14 +247,21 @@ std::vector<ProposedPath> Planner::get_next_locations(
       if (h >= static_cast<int>(fleet->G.V.size())) continue;  // unreachable
 
       // count blocking agents at the new cell (parked agents in the way)
+      // with goal_lock: skip cells occupied by goal-locked agents
       int nb = 0;
+      bool goal_blocked = false;
       auto occupants = P.get_occupants(fleet->id, nc, nt);
       for (int occ : occupants) {
         if (occ != agent_id) {
+          if (goal_lock && goal_reached.count(occ)) {
+            goal_blocked = true;
+            break;
+          }
           auto occ_ep = P.get_endpoint(occ);
           if (occ_ep.end_time <= nt) ++nb;
         }
       }
+      if (goal_blocked) continue;
 
       // EXTENSION: congestion penalty — steer away from crowded cells
       int congestion = std::min(nb, 3);
@@ -295,8 +307,11 @@ bool Planner::push_agent(int agent_id, int time,
   if (max_depth <= 0) return false;
   if (in_chain.count(agent_id)) return false;
 
-  // goal-reached agents can be displaced temporarily; they will
-  // re-plan to return on subsequent steps (standard PIBT behavior)
+  // goal-locked agents are permanently fixed — refuse to push them.
+  // This matches pibt_rs behavior: once at goal, agent becomes a static
+  // obstacle and other agents must route around it.
+  if (goal_lock && goal_reached.count(agent_id)) return false;
+
   in_chain.insert(agent_id);
 
   auto* fleet = ins->get_fleet(agent_id);
@@ -338,9 +353,10 @@ bool Planner::push_agent(int agent_id, int time,
         if (traj.start_time > time + 50) break;
       }
       if (traj.start_time <= time + 50) {
-        // if displaced from goal, remove from goal_reached so it re-plans
-        if (goal_reached.count(agent_id)) {
+        // if displaced from goal without locking, allow re-planning
+        if (!goal_lock && goal_reached.count(agent_id)) {
           goal_reached.erase(agent_id);
+          goal_time.erase(agent_id);
         }
         return true;
       }
@@ -410,7 +426,10 @@ bool Planner::push_agent(int agent_id, int time,
       if (traj.start_time > time + 50) break;
     }
     if (traj.start_time <= time + 50) {
-      goal_reached.erase(agent_id);
+      if (!goal_lock && goal_reached.count(agent_id)) {
+        goal_reached.erase(agent_id);
+        goal_time.erase(agent_id);
+      }
       return true;
     }
 
@@ -533,7 +552,9 @@ Solution Planner::solve(int max_timesteps)
       // check if agent is at goal
       if (ins->goals[aid] != nullptr && ep.cell_index == ins->goals[aid]->index) {
         goal_reached.insert(aid);
+        goal_time[aid] = step;
         needs_recalc = true;
+        info(2, verbose, "agent ", aid, " reached goal, step ", step);
         continue;
       }
 
@@ -574,10 +595,10 @@ Solution Planner::solve(int max_timesteps)
 
 // convenience entry point
 Solution solve(const HetInstance& ins, int verbose, const Deadline* deadline,
-               std::mt19937* MT, int max_timesteps)
+               std::mt19937* MT, int max_timesteps, bool goal_lock)
 {
   auto default_mt = std::mt19937(0);
   if (MT == nullptr) MT = &default_mt;
-  Planner planner(&ins, deadline, MT, verbose);
+  Planner planner(&ins, deadline, MT, verbose, goal_lock);
   return planner.solve(max_timesteps);
 }
