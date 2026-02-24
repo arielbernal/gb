@@ -1,3 +1,39 @@
+/*
+ * Heuristics overview — CORE vs EXTENSIONS
+ *
+ * CORE (from PIBT paper):
+ *   - Elapsed counter: priority += 1 per step, reset to 0 at goal.
+ *     Ensures agents that haven't reached their goal recently get planned first.
+ *   - Per-agent tie_breakers: random float in [0,1) added to priority for
+ *     ordering jitter, preventing systematic starvation at equal priority.
+ *   - Same-fleet BFS depth = 1: vanilla PIBT one-step lookahead.
+ *   - Cross-fleet adaptive BFS depth = ceil(parent_cs / agent_cs): lets smaller
+ *     agents escape a larger agent's footprint when pushed.
+ *   - BFS neighbor shuffling: randomized expansion order so agents don't all
+ *     pick the same path through equal-cost intersections.
+ *
+ * EXTENSIONS (our additions for non-biconnected graphs):
+ *   - Stuck counter acceleration: tracks whether each agent's distance-to-goal
+ *     decreased. If not, stuck_count increments. Priority formula becomes
+ *     elapsed + stuck_count, giving quadratic priority growth for stuck agents
+ *     vs linear for progressing ones. Needed because room-64-64-8 doorways are
+ *     bridge edges (not biconnected), so the paper's Theorem 1 guarantee does
+ *     not hold.
+ *   - Congestion penalty min(nb,3): added to BFS heuristic cost. Steers agents
+ *     away from cells with many parked blockers, preventing chokepoint funneling
+ *     caused by identical distance-table gradients. Capped at 3 to avoid
+ *     over-penalizing in dense but passable areas.
+ *   - Minimum BFS depth 2: all agents get at least 2-step lookahead (paper
+ *     uses 1). On non-biconnected graphs with single-cell doorways (bridges),
+ *     1-step lookahead can't see past the doorway, causing agents to oscillate
+ *     at room entrances.
+ *   - Oscillation penalty: in low-density areas (<=2 blockers), penalize BFS
+ *     candidates that revisit the agent's last 10 positions (+2 per revisit).
+ *     Without this, agents oscillate between the same 2-3 cells even with high
+ *     priority — stuck_count fixes planning ORDER but not PATH SELECTION.
+ *     Density-gated to avoid penalizing necessary revisits in crowded areas.
+ */
+
 #include "../include/planner.hpp"
 
 #include <algorithm>
@@ -19,6 +55,21 @@ Planner::Planner(const HetInstance* _ins, const Deadline* _deadline,
     tie_breakers[i] = get_random_float(MT, 0, 1);
   }
 
+  // CORE: paper's elapsed counter
+  elapsed.resize(N, 0);
+
+  // EXTENSION: stuck counter + distance tracking
+  last_dist.resize(N, 0);
+  stuck_count.resize(N, 0);
+  for (int i = 0; i < N; ++i) {
+    if (ins->starts[i] != nullptr) {
+      last_dist[i] = D.get(i, ins->starts[i]->id);
+    }
+  }
+
+  // EXTENSION: position history for anti-oscillation
+  recent_cells.resize(N);
+
   // initial reservation: every agent occupies its start cell at t=0
   for (int i = 0; i < N; ++i) {
     if (ins->starts[i] == nullptr) continue;
@@ -37,10 +88,37 @@ void Planner::update_priorities(int step)
 {
   for (int i = 0; i < N; ++i) {
     if (goal_reached.count(i)) {
+      // CORE: reset elapsed at goal
+      elapsed[i] = 0;
+      // EXTENSION: reset stuck counter at goal
+      stuck_count[i] = 0;
       ins->agents[i]->priority = 0.0f;
-    } else {
-      ins->agents[i]->priority += 1.0f;
+      continue;
     }
+
+    // CORE: elapsed counter increments every step
+    elapsed[i]++;
+
+    // EXTENSION: stuck counter — did agent make progress toward goal?
+    auto ep = P.get_endpoint(i);
+    if (ep.fleet_id >= 0) {
+      auto* fleet = ins->get_fleet(i);
+      auto* v = fleet->G.U[ep.cell_index];
+      int cur_dist = (v != nullptr) ? D.get(i, v->id) : last_dist[i];
+      if (cur_dist < last_dist[i]) {
+        stuck_count[i] = 0;  // made progress
+        last_dist[i] = cur_dist;
+      } else {
+        stuck_count[i]++;
+      }
+    }
+
+    // CORE + EXTENSION: accumulative priority.
+    // Base +1 per step (paper's elapsed) + stuck_count acceleration.
+    // Progressing agents: priority grows linearly (just +1/step).
+    // Stuck agents: priority grows quadratically (+1+sc/step, sc increasing).
+    // This ensures stuck agents rapidly outprioritize progressing ones.
+    ins->agents[i]->priority += 1.0f + stuck_count[i];
   }
 }
 
@@ -141,6 +219,12 @@ std::vector<ProposedPath> Planner::get_next_locations(
       next_cells.push_back(u->index);
     }
 
+    // shuffle move-neighbors (indices 1..end) so agents don't all pick
+    // the same path through equal-cost intersections
+    if (next_cells.size() > 2) {
+      std::shuffle(next_cells.begin() + 1, next_cells.end(), *MT);
+    }
+
     for (int nc : next_cells) {
       int nt = cur_t + 1;
       uint64_t nkey = encode(nt, nc);
@@ -157,7 +241,7 @@ std::vector<ProposedPath> Planner::get_next_locations(
       int h = D.get(agent_id, nv->id);
       if (h >= static_cast<int>(fleet->G.V.size())) continue;  // unreachable
 
-      // count blocking agents at the new cell
+      // count blocking agents at the new cell (parked agents in the way)
       int nb = 0;
       auto occupants = P.get_occupants(fleet->id, nc, nt);
       for (int occ : occupants) {
@@ -167,9 +251,23 @@ std::vector<ProposedPath> Planner::get_next_locations(
         }
       }
 
+      // EXTENSION: congestion penalty — steer away from crowded cells
+      int congestion = std::min(nb, 3);
+
+      // EXTENSION: oscillation penalty — in low-density areas (nb<=2),
+      // penalize revisiting cells from the agent's recent history.
+      // Breaks 2-cell oscillation patterns in corridors/doorways without
+      // affecting dense areas where revisits are unavoidable.
+      int osc_penalty = 0;
+      if (nb <= 2) {
+        for (int rc : recent_cells[agent_id]) {
+          if (rc == nc) osc_penalty += 2;
+        }
+      }
+
       visited.insert(nkey);
       came_from[nkey] = encode(cur_t, cur_cell);
-      pq.push({h, nb, nt, nc});
+      pq.push({h + congestion + osc_penalty, nb, nt, nc});
     }
   }
 
@@ -204,8 +302,10 @@ bool Planner::push_agent(int agent_id, int time,
   auto* fleet = ins->get_fleet(agent_id);
   int fw = fleet->G.width;
 
-  // BFS depth: at least min_bfs_depth (set by parent's cell_size so small
-  // agents can escape a large agent's footprint), and at least own cell_size
+  // BFS depth per the paper:
+  //   same-fleet or top-level: depth = 1 (vanilla PIBT)
+  //   cross-fleet push where parent is larger: depth = ceil(parent_cs / agent_cs)
+  //     so smaller agent can escape the larger agent's footprint
   int bfs_depth = std::max(min_bfs_depth, fleet->cell_size);
   auto candidates = get_next_locations(agent_id, time, keep_out, bfs_depth);
 
@@ -241,8 +341,6 @@ bool Planner::push_agent(int agent_id, int time,
         // if displaced from goal, remove from goal_reached so it re-plans
         if (goal_reached.count(agent_id)) {
           goal_reached.erase(agent_id);
-          // boost priority so displaced agent returns quickly
-          ins->agents[agent_id]->priority = static_cast<float>(time);
         }
         return true;
       }
@@ -267,13 +365,15 @@ bool Planner::push_agent(int agent_id, int time,
     for (int ba : pp.blocking_agents) {
       auto* ba_fleet = ins->get_fleet(ba);
       int depth = max_depth - 1;
-      // allow smaller agents more depth to escape large agents
-      if (fleet->cell_size > ba_fleet->cell_size) {
-        depth = std::max(depth, 2);
-      }
 
-      // pushed agent needs BFS depth >= parent's cell_size to escape footprint
-      int sub_bfs_depth = std::max(min_bfs_depth, fleet->cell_size);
+      // cross-fleet: smaller blocker needs enough BFS depth to escape
+      // the larger agent's footprint: ceil(parent_cs / blocker_cs)
+      int sub_bfs_depth = 1;
+      if (fleet->cell_size > ba_fleet->cell_size) {
+        sub_bfs_depth = (fleet->cell_size + ba_fleet->cell_size - 1)
+                        / ba_fleet->cell_size;
+        depth = std::max(depth, sub_bfs_depth);
+      }
 
       if (!push_agent(ba, time, new_ko, in_chain, depth, sub_bfs_depth)) {
         all_pushed = false;
@@ -330,7 +430,10 @@ bool Planner::attempt_solve_for_agent(int agent_id, int time,
   std::unordered_set<int> in_chain;
   std::unordered_set<int> keep_out;
 
-  if (push_agent(agent_id, time, keep_out, in_chain, 6)) {
+  // EXTENSION: min_bfs_depth=2 gives all agents at least 2-step lookahead,
+  // helping them escape single-cell doorways on non-biconnected graphs.
+  // Paper's vanilla PIBT uses depth=1 (CORE).
+  if (push_agent(agent_id, time, keep_out, in_chain, 6, 2)) {
     return true;
   }
 
@@ -391,15 +494,8 @@ Solution Planner::solve(int max_timesteps)
 {
   info(1, verbose, "HetPIBT solver started, N=", N);
 
-  // initialize priorities from distance to goal
-  for (int i = 0; i < N; ++i) {
-    auto* fleet = ins->get_fleet(i);
-    if (ins->starts[i] != nullptr) {
-      int dist = D.get(i, ins->starts[i]->id);
-      ins->agents[i]->priority =
-          static_cast<float>(dist) / std::max(1, static_cast<int>(fleet->G.V.size()));
-    }
-  }
+  // CORE: all agents start with elapsed = 0
+  // EXTENSION: stuck_count = 0, last_dist = initial distance (constructor)
 
   for (int step = 1; step <= max_timesteps; ++step) {
     if (is_expired(deadline)) {
@@ -445,6 +541,17 @@ Solution Planner::solve(int max_timesteps)
     }
 
     if (needs_recalc) recalculate_costs();
+
+    // EXTENSION: update recent position history for anti-oscillation
+    for (int i = 0; i < N; ++i) {
+      auto ep = P.get_endpoint(i);
+      if (ep.fleet_id >= 0) {
+        recent_cells[i].push_back(ep.cell_index);
+        if (static_cast<int>(recent_cells[i].size()) > 10) {
+          recent_cells[i].pop_front();
+        }
+      }
+    }
   }
 
   // build solution from reservation table

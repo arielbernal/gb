@@ -26,6 +26,7 @@ std::vector<int> CollisionChecker::to_base_cells(int fleet_id, int cell_index,
                                                  int fleet_width) const
 {
   int cs = static_cast<int>(grid_sizes[fleet_id]);
+  // non-overlapping tiling: fleet cell (fx, fy) covers base [fx*cs, (fx+1)*cs)
   int fx = cell_index % fleet_width;
   int fy = cell_index / fleet_width;
 
@@ -54,34 +55,30 @@ std::pair<int, int> CollisionChecker::to_grid_space(int fleet_id, float wx,
 std::vector<std::pair<int, int>> CollisionChecker::get_blocked_nodes(
     int fleet_id, int x, int y, const Fleets& fleets) const
 {
-  float cs = grid_sizes[fleet_id];
-  // real-world bounding box of this cell
-  float rw_x0 = x * cs;
-  float rw_y0 = y * cs;
-  float rw_x1 = rw_x0 + cs;
-  float rw_y1 = rw_y0 + cs;
+  int cs = static_cast<int>(grid_sizes[fleet_id]);
+  // non-overlapping tiling: cell (x,y) covers real-world [x*cs, (x+1)*cs)
 
   std::vector<std::pair<int, int>> result;
 
   for (size_t fid = 0; fid < fleets.size(); ++fid) {
     if (static_cast<int>(fid) == fleet_id) continue;
 
-    float other_cs = grid_sizes[fid];
+    int other_cs = static_cast<int>(grid_sizes[fid]);
     int other_w = fleets[fid]->G.width;
     int other_h = fleets[fid]->G.height;
     if (other_w == 0 || other_h == 0) continue;
 
-    // find overlapping cell range on the other fleet's graph
-    int sx = static_cast<int>(std::floor(rw_x0 / other_cs));
-    int sy = static_cast<int>(std::floor(rw_y0 / other_cs));
-    int ex = static_cast<int>(std::ceil(rw_x1 / other_cs));
-    int ey = static_cast<int>(std::ceil(rw_y1 / other_cs));
+    // real-world bounding box of this cell
+    int rw_x0 = x * cs;
+    int rw_y0 = y * cs;
+    int rw_x1 = rw_x0 + cs;  // exclusive
+    int rw_y1 = rw_y0 + cs;
 
-    // clamp to grid bounds
-    sx = std::max(0, sx);
-    sy = std::max(0, sy);
-    ex = std::min(ex, other_w);
-    ey = std::min(ey, other_h);
+    // map to other fleet's grid: which cells overlap?
+    int sx = rw_x0 / other_cs;
+    int sy = rw_y0 / other_cs;
+    int ex = std::min((rw_x1 + other_cs - 1) / other_cs, other_w);
+    int ey = std::min((rw_y1 + other_cs - 1) / other_cs, other_h);
 
     for (int oy = sy; oy < ey; ++oy) {
       for (int ox = sx; ox < ex; ++ox) {

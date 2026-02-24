@@ -38,6 +38,35 @@ std::vector<int> ReservationTable::get_all_base_cells(int fleet_id,
   return base_cells;
 }
 
+void ReservationTable::update_parked_index(int agent_id,
+                                           const AgentEndpoint* old_ep,
+                                           const AgentEndpoint* new_ep)
+{
+  // remove old parked cells
+  if (old_ep && old_ep->fleet_id >= 0) {
+    auto* pf = (*fleets)[old_ep->fleet_id];
+    int pfw = pf->G.width;
+    auto old_base = cc->to_base_cells(old_ep->fleet_id, old_ep->cell_index, pfw);
+    for (int bc : old_base) {
+      auto it = parked_at_cell.find(bc);
+      if (it != parked_at_cell.end()) {
+        auto& vec = it->second;
+        vec.erase(std::remove(vec.begin(), vec.end(), agent_id), vec.end());
+        if (vec.empty()) parked_at_cell.erase(it);
+      }
+    }
+  }
+  // add new parked cells
+  if (new_ep && new_ep->fleet_id >= 0) {
+    auto* pf = (*fleets)[new_ep->fleet_id];
+    int pfw = pf->G.width;
+    auto new_base = cc->to_base_cells(new_ep->fleet_id, new_ep->cell_index, pfw);
+    for (int bc : new_base) {
+      parked_at_cell[bc].push_back(agent_id);
+    }
+  }
+}
+
 void ReservationTable::insert_cell(int agent_id, int fleet_id, int cell_index,
                                    int time)
 {
@@ -72,18 +101,18 @@ bool ReservationTable::is_occupied(int fleet_id, int cell_index, int time,
     }
   }
 
-  // check parked agents: any agent whose last explicit reservation ended
-  // before `time` is implicitly holding at its endpoint position
+  // check parked agents via spatial index: O(1) per base cell
   if (include_parked) {
-    std::unordered_set<int> query_set(base_cells.begin(), base_cells.end());
-    for (auto& [aid, ep] : agent_last) {
-      if (aid == exclude_agent) continue;
-      if (ep.end_time >= time) continue;
-      auto* pf = (*fleets)[ep.fleet_id];
-      int pfw = pf->G.width;
-      auto parked_base = cc->to_base_cells(ep.fleet_id, ep.cell_index, pfw);
-      for (int pbc : parked_base) {
-        if (query_set.count(pbc)) return true;
+    for (int bc : base_cells) {
+      auto it = parked_at_cell.find(bc);
+      if (it != parked_at_cell.end()) {
+        for (int aid : it->second) {
+          if (aid == exclude_agent) continue;
+          auto ep_it = agent_last.find(aid);
+          if (ep_it != agent_last.end() && ep_it->second.end_time < time) {
+            return true;
+          }
+        }
       }
     }
   }
@@ -158,20 +187,17 @@ std::vector<int> ReservationTable::get_occupants(int fleet_id, int cell_index,
     }
   }
 
-  // parked agents: end_time < time means they are implicitly holding
-  std::unordered_set<int> query_set(base_cells.begin(), base_cells.end());
-  for (auto& [aid, ep] : agent_last) {
-    if (ep.end_time >= time) continue;
-    if (seen.count(aid)) continue;
-    auto* pf = (*fleets)[ep.fleet_id];
-    int pfw = pf->G.width;
-    auto parked_base = cc->to_base_cells(ep.fleet_id, ep.cell_index, pfw);
-    for (int pbc : parked_base) {
-      if (query_set.count(pbc)) {
-        if (seen.insert(aid).second) {
-          result.push_back(aid);
+  // parked agents via spatial index: O(1) per base cell
+  for (int bc : base_cells) {
+    auto it = parked_at_cell.find(bc);
+    if (it != parked_at_cell.end()) {
+      for (int aid : it->second) {
+        auto ep_it = agent_last.find(aid);
+        if (ep_it != agent_last.end() && ep_it->second.end_time < time) {
+          if (seen.insert(aid).second) {
+            result.push_back(aid);
+          }
         }
-        break;
       }
     }
   }
@@ -200,9 +226,12 @@ void ReservationTable::reserve(const Trajectory& traj)
     traj_log[traj.agent_id].push_back({t, traj.positions[i]});
   }
 
-  // update endpoint
-  agent_last[traj.agent_id] = {traj.fleet_id, traj.positions.back(),
-                                traj.end_time()};
+  // update endpoint and parked index
+  auto old_it = agent_last.find(traj.agent_id);
+  AgentEndpoint* old_ep = (old_it != agent_last.end()) ? &old_it->second : nullptr;
+  AgentEndpoint new_ep = {traj.fleet_id, traj.positions.back(), traj.end_time()};
+  update_parked_index(traj.agent_id, old_ep, &new_ep);
+  agent_last[traj.agent_id] = new_ep;
 }
 
 bool ReservationTable::try_reserve(const Trajectory& traj)
@@ -266,7 +295,11 @@ void ReservationTable::remove_agent(int agent_id)
     }
     agent_cells.erase(it);
   }
-  agent_last.erase(agent_id);
+  auto ep_it = agent_last.find(agent_id);
+  if (ep_it != agent_last.end()) {
+    update_parked_index(agent_id, &ep_it->second, nullptr);
+    agent_last.erase(ep_it);
+  }
 }
 
 ReservationTable::AgentEndpoint ReservationTable::get_endpoint(
@@ -283,4 +316,5 @@ void ReservationTable::clear()
   agent_cells.clear();
   agent_last.clear();
   traj_log.clear();
+  parked_at_cell.clear();
 }

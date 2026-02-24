@@ -204,7 +204,11 @@ def load_het_result(result_path):
 # Coordinate helpers
 # ---------------------------------------------------------------------------
 def fleet_to_base(fx, fy, cell_size):
-    """Convert fleet grid cell (fx, fy) to base grid center coordinates."""
+    """Convert fleet grid cell (fx, fy) to base grid center coordinates.
+
+    Non-overlapping tiling: fleet cell (fx, fy) covers base cells
+    [fx*cs, (fx+1)*cs) x [fy*cs, (fy+1)*cs).
+    """
     bx = fx * cell_size + (cell_size - 1) / 2.0
     by = fy * cell_size + (cell_size - 1) / 2.0
     return bx, by
@@ -261,25 +265,30 @@ FLEET_LINE_STYLES = [
 
 def draw_fleet_grid(ax, cell_size, base_w, base_h, color, label,
                     style_idx=0):
-    """Draw fleet grid overlay on the base map."""
+    """Draw fleet grid overlay on the base map.
+
+    Non-overlapping tiling: fleet cells tile the base map in cs×cs blocks.
+    Draw the outer boundary of the fleet grid.
+    """
     fleet_w = base_w // cell_size
     fleet_h = base_h // cell_size
+    if fleet_w <= 0 or fleet_h <= 0:
+        return
     ls = FLEET_LINE_STYLES[style_idx % len(FLEET_LINE_STYLES)]
 
-    # vertical lines
-    for i in range(fleet_w + 1):
-        x = i * cell_size - 0.5
-        ax.axvline(x, color=color, linewidth=1.2, alpha=0.5,
-                   linestyle=ls, zorder=2)
+    # draw boundary of valid fleet cell range
+    rect_x = -0.5
+    rect_y = -0.5
+    rect_w = fleet_w
+    rect_h = fleet_h
+    import matplotlib.patches as mpatches
+    rect = mpatches.Rectangle((rect_x, rect_y), rect_w, rect_h,
+                              linewidth=2, edgecolor=color, facecolor='none',
+                              linestyle=ls, alpha=0.5, zorder=2)
+    ax.add_patch(rect)
 
-    # horizontal lines
-    for j in range(fleet_h + 1):
-        y = j * cell_size - 0.5
-        ax.axhline(y, color=color, linewidth=1.2, alpha=0.5,
-                   linestyle=ls, zorder=2)
-
-    # label in top-left of the grid
-    ax.text(cell_size * 0.5 - 0.5, cell_size * 0.5 - 0.5, label,
+    # label
+    ax.text(cell_size * 0.5, cell_size * 0.5, label,
             color=color, fontsize=8, ha="center", va="center",
             alpha=0.6, fontweight="bold", zorder=2)
 

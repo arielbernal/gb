@@ -125,13 +125,20 @@ void Graph::build_from_base(const Graph& base, int cell_size)
   V.clear();
   U.clear();
 
+  // non-overlapping tiling: fleet cell (fx, fy) occupies base cells
+  // [fx*cell_size..(fx+1)*cell_size-1] x [fy*cell_size..(fy+1)*cell_size-1]
+  // agent moves cell_size base cells per step
   width = base.width / cell_size;
   height = base.height / cell_size;
+  if (width <= 0 || height <= 0) {
+    width = 0;
+    height = 0;
+    return;
+  }
   U = Vertices(width * height, nullptr);
 
   // a fleet cell (fx, fy) is passable only if ALL underlying
-  // base cells in [fx*cell_size .. (fx+1)*cell_size) x
-  //               [fy*cell_size .. (fy+1)*cell_size) are passable
+  // base cells in [fx*cs .. (fx+1)*cs) x [fy*cs .. (fy+1)*cs) are passable
   for (int fy = 0; fy < height; ++fy) {
     for (int fx = 0; fx < width; ++fx) {
       bool passable = true;

@@ -22,8 +22,10 @@ struct HetInstance {
   CollisionChecker cc;   // cross-fleet collision checker
 
   // load from het_bench scenario file + .map file
+  // swap_xy: swap x/y coordinates to match pypibt/pibt_rs transposed convention
   HetInstance(const std::string& scen_filename,
-              const std::string& map_filename);
+              const std::string& map_filename,
+              bool swap_xy = false);
 
   // programmatic construction for testing
   HetInstance(const std::string& map_filename,
@@ -34,6 +36,9 @@ struct HetInstance {
               const std::vector<int>& goal_indexes);
 
   ~HetInstance();
+
+  // remove agents with null start or goal; returns count removed
+  int skip_invalid_agents(const int verbose = 0);
 
   // simple feasibility check
   bool is_valid(const int verbose = 0) const;

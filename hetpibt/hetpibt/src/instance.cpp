@@ -16,7 +16,8 @@ Fleet* HetInstance::get_fleet(int agent_id) const
 // het_bench format:
 // agent_id fleet_id footprint velocity sx sy gx gy grid_w grid_h
 HetInstance::HetInstance(const std::string& scen_filename,
-                         const std::string& map_filename)
+                         const std::string& map_filename,
+                         bool swap_xy)
     : base_grid(map_filename), N(0)
 {
   std::ifstream file(scen_filename);
@@ -85,18 +86,21 @@ HetInstance::HetInstance(const std::string& scen_filename,
     int cs = fleet->cell_size;
     int fw = fleet->G.width;
 
-    // convert absolute free-space coordinates to fleet grid cell
-    // het_bench stores cell centers; divide by cell_size to get grid coords
-    int fx_s = ra.sx / cs;
-    int fy_s = ra.sy / cs;
-    int fx_g = ra.gx / cs;
-    int fy_g = ra.gy / cs;
-
-    // clamp to fleet grid bounds
-    fx_s = std::min(fx_s, fw - 1);
-    fy_s = std::min(fy_s, fleet->G.height - 1);
-    fx_g = std::min(fx_g, fw - 1);
-    fy_g = std::min(fy_g, fleet->G.height - 1);
+    // non-overlapping tiling: divide real-world coords by cell_size
+    // swap_xy: pypibt/pibt_rs use x as row index, y as column index
+    // (transposed from the standard convention); --swap-xy matches this
+    int fx_s, fy_s, fx_g, fy_g;
+    if (swap_xy) {
+      fx_s = ra.sy / cs;
+      fy_s = ra.sx / cs;
+      fx_g = ra.gy / cs;
+      fy_g = ra.gx / cs;
+    } else {
+      fx_s = ra.sx / cs;
+      fy_s = ra.sy / cs;
+      fx_g = ra.gx / cs;
+      fy_g = ra.gy / cs;
+    }
 
     auto* sv = fleet->G.U[fw * fy_s + fx_s];
     auto* gv = fleet->G.U[fw * fy_g + fx_g];
@@ -141,6 +145,26 @@ HetInstance::HetInstance(const std::string& map_filename,
     starts.push_back(fleet->G.U[start_indexes[i]]);
     goals.push_back(fleet->G.U[goal_indexes[i]]);
   }
+}
+
+int HetInstance::skip_invalid_agents(const int verbose)
+{
+  int removed = 0;
+  for (int i = static_cast<int>(N) - 1; i >= 0; --i) {
+    if (starts[i] == nullptr || goals[i] == nullptr) {
+      info(1, verbose, "removing agent ", i,
+           (starts[i] == nullptr ? " (null start)" : " (null goal)"));
+      delete agents[i];
+      agents.erase(agents.begin() + i);
+      starts.erase(starts.begin() + i);
+      goals.erase(goals.begin() + i);
+      ++removed;
+    }
+  }
+  if (removed > 0) {
+    N = agents.size();
+  }
+  return removed;
 }
 
 bool HetInstance::is_valid(const int verbose) const

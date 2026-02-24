@@ -30,6 +30,10 @@ int main(int argc, char* argv[])
       .help("random seed")
       .default_value(0)
       .scan<'i', int>();
+  program.add_argument("--swap-xy")
+      .help("swap x/y coords (match pypibt/pibt_rs het_bench convention)")
+      .default_value(false)
+      .implicit_value(true);
 
   try {
     program.parse_args(argc, argv);
@@ -46,17 +50,20 @@ int main(int argc, char* argv[])
   auto time_limit = program.get<double>("--time_limit");
   auto max_timesteps = program.get<int>("--max_timesteps");
   auto seed = program.get<int>("--seed");
+  auto swap_xy = program.get<bool>("--swap-xy");
 
   // create instance
-  auto ins = HetInstance(scen_file, map_file);
+  auto ins = HetInstance(scen_file, map_file, swap_xy);
+  int skipped = ins.skip_invalid_agents(verbose);
+  if (skipped > 0) {
+    info(0, verbose, "skipped ", skipped, " agents with null start/goal");
+  }
   if (!ins.is_valid(verbose)) {
     std::cerr << "invalid instance" << std::endl;
     return 1;
   }
-  if (!ins.validate_scenario(verbose)) {
-    std::cerr << "scenario validation failed" << std::endl;
-    return 1;
-  }
+  // validate but don't abort — het_bench scenarios may have start/goal overlaps
+  ins.validate_scenario(verbose);
   info(0, verbose, "instance loaded: N=", ins.N, " fleets=",
        ins.fleets.size());
 

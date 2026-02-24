@@ -72,15 +72,13 @@ def get_occupied_base_cells(fx, fy, cell_size):
     """Return the set of base-grid cells occupied by an agent at fleet-graph
     position (fx, fy) with the given cell_size.
 
-    The base-grid top-left is (fx * cell_size, fy * cell_size), and the agent
-    occupies a cs x cs block from there.
+    Non-overlapping tiling: fleet cell (fx, fy) covers base cells
+    [fx*cs, (fx+1)*cs) x [fy*cs, (fy+1)*cs).
     """
-    bx = fx * cell_size
-    by = fy * cell_size
     cells = set()
     for dx in range(cell_size):
         for dy in range(cell_size):
-            cells.add((bx + dx, by + dy))
+            cells.add((fx * cell_size + dx, fy * cell_size + dy))
     return cells
 
 
@@ -228,10 +226,8 @@ def main():
             fx2, fy2 = pos2[t]
             print(
                 f"  t={t}: base cell {cell} shared by "
-                f"agent {a1} (fleet={f1}, cs={cs1}, fleet_pos=({fx1},{fy1}), "
-                f"base_topleft=({fx1*cs1},{fy1*cs1})) and "
-                f"agent {a2} (fleet={f2}, cs={cs2}, fleet_pos=({fx2},{fy2}), "
-                f"base_topleft=({fx2*cs2},{fy2*cs2}))"
+                f"agent {a1} (fleet={f1}, cs={cs1}, fleet_pos=({fx1},{fy1})) and "
+                f"agent {a2} (fleet={f2}, cs={cs2}, fleet_pos=({fx2},{fy2}))"
             )
 
         if len(collisions) > show_count:

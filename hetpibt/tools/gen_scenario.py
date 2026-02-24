@@ -40,9 +40,16 @@ def load_map(path):
 
 
 def build_fleet_grid(base_grid, width, height, cell_size):
-    """Build a fleet grid. A fleet cell (fx,fy) is free if ALL cs*cs base cells are free."""
+    """Build a non-overlapping tiling fleet grid.
+
+    Fleet cell (fx,fy) covers base cells [fx*cs, (fx+1)*cs) x [fy*cs, (fy+1)*cs).
+    Agent moves cell_size base cells per step.
+    A fleet cell is free if ALL cs*cs base cells are free.
+    """
     fw = width // cell_size
     fh = height // cell_size
+    if fw <= 0 or fh <= 0:
+        return 0, 0, set()
     free = set()
     for fy in range(fh):
         for fx in range(fw):
@@ -110,7 +117,11 @@ def bfs_reachable(start, goal, free_cells):
 
 
 def get_base_footprint(fx, fy, cell_size):
-    """Get the set of base-grid cells occupied by fleet cell (fx,fy)."""
+    """Get the set of base-grid cells occupied by fleet cell (fx,fy).
+
+    Non-overlapping tiling: fleet cell (fx,fy) covers base
+    [fx*cs, (fx+1)*cs) x [fy*cs, (fy+1)*cs).
+    """
     cells = set()
     for dy in range(cell_size):
         for dx in range(cell_size):
@@ -212,14 +223,15 @@ def verify_placements(all_agents, fleet_grids):
     all_start_cells = {}  # base cell -> agent_id
     all_goal_cells = {}   # base cell -> agent_id
     for aid, fi, cs, vel, sx, sy, gx, gy, fw, fh in all_agents:
-        sfp = get_base_footprint(sx // cs, sy // cs, cs)
+        # tiling: sx,sy are fleet coords, base cells at (sx*cs, sy*cs)
+        sfp = get_base_footprint(sx, sy, cs)
         for bc in sfp:
             if bc in all_start_cells:
                 print(f"  ERROR: Start overlap at base {bc}: "
                       f"agent {aid} and agent {all_start_cells[bc]}")
                 ok = False
             all_start_cells[bc] = aid
-        gfp = get_base_footprint(gx // cs, gy // cs, cs)
+        gfp = get_base_footprint(gx, gy, cs)
         for bc in gfp:
             if bc in all_goal_cells:
                 print(f"  ERROR: Goal overlap at base {bc}: "
@@ -230,8 +242,8 @@ def verify_placements(all_agents, fleet_grids):
     # check BFS reachability for each agent
     for aid, fi, cs, vel, sx, sy, gx, gy, fw, fh in all_agents:
         _, _, free, _, _, _ = fleet_grids[fi]
-        start_fleet = (sx // cs, sy // cs)
-        goal_fleet = (gx // cs, gy // cs)
+        start_fleet = (sx, sy)
+        goal_fleet = (gx, gy)
         if not bfs_reachable(start_fleet, goal_fleet, free):
             print(f"  ERROR: Agent {aid} goal {goal_fleet} unreachable "
                   f"from start {start_fleet} on fleet {fi} (cs={cs})")
@@ -296,10 +308,11 @@ def main():
         placements = place_agents(comps, free, cs, n,
                                    occupied_starts, occupied_goals, rng)
         for start, goal in placements:
-            sx = start[0] * cs
-            sy = start[1] * cs
-            gx = goal[0] * cs
-            gy = goal[1] * cs
+            # tiling: fleet coords; base top-left at (fx*cs, fy*cs)
+            sx = start[0]
+            sy = start[1]
+            gx = goal[0]
+            gy = goal[1]
             all_agents.append((agent_id, fi, cs, vel, sx, sy, gx, gy, fw, fh))
             agent_id += 1
             print(f"  Agent {agent_id-1}: fleet={fi} cs={cs} "
@@ -315,7 +328,9 @@ def main():
     with open(args.out, "w") as f:
         for a in all_agents:
             aid, fid, cs, vel, sx, sy, gx, gy, fw, fh = a
-            f.write(f"{aid} {fid} {cs} {vel} {sx} {sy} {gx} {gy} {fw} {fh}\n")
+            # write real-world coords (fleet_coord * cell_size) so the
+            # het_bench parser can recover fleet coords via division
+            f.write(f"{aid} {fid} {cs} {vel} {sx*cs} {sy*cs} {gx*cs} {gy*cs} {fw} {fh}\n")
 
     print(f"\nWrote {len(all_agents)} agents to {args.out}")
 

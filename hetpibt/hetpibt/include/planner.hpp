@@ -32,6 +32,17 @@ struct Planner {
   std::vector<float> tie_breakers;
   std::unordered_set<int> goal_reached;  // agents at their goals
 
+  // CORE (paper): elapsed counter — steps since last reaching goal, reset to 0
+  std::vector<int> elapsed;
+
+  // EXTENSION: stuck counter for non-biconnected graphs
+  // Tracks distance-to-goal progress; increments when agent doesn't get closer
+  std::vector<int> last_dist;
+  std::vector<int> stuck_count;
+
+  // EXTENSION: recent position history for anti-oscillation
+  std::vector<std::deque<int>> recent_cells;
+
   Planner(const HetInstance* _ins, const Deadline* _deadline,
           std::mt19937* _mt, int _verbose = 0);
   ~Planner();

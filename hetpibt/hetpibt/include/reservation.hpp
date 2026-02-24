@@ -72,6 +72,10 @@ struct ReservationTable {
   };
   std::unordered_map<int, AgentEndpoint> agent_last;
 
+  // spatial index for parked agents: base_cell -> set of agent IDs
+  // maintained by update_parked_index(); enables O(1) parked-agent lookups
+  std::unordered_map<int, std::vector<int>> parked_at_cell;
+
   // trajectory log: traj_log[agent_id] = chronological (time, cell_index)
   // populated by reserve(); used by make_log for visualization output
   std::unordered_map<int, std::vector<std::pair<int, int>>> traj_log;
@@ -122,4 +126,7 @@ struct ReservationTable {
   void insert_cell(int agent_id, int fleet_id, int cell_index, int time);
   // collect all base cells for a fleet cell (including cross-fleet ghosts)
   std::vector<int> get_all_base_cells(int fleet_id, int cell_index) const;
+  // update the parked_at_cell index when an agent's endpoint changes
+  void update_parked_index(int agent_id, const AgentEndpoint* old_ep,
+                           const AgentEndpoint* new_ep);
 };

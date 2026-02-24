@@ -12,6 +12,7 @@ TEST(Graph, LoadMap)
 
 TEST(Graph, BuildFromBase)
 {
+  // 4x4 base with cell_size=2 -> tiling: (4/2)x(4/2) = 2x2
   Graph base("../tests/assets/4x4.map");
   Graph fleet;
   fleet.build_from_base(base, 2);
@@ -27,7 +28,7 @@ TEST(Graph, BuildFromBase)
 
 TEST(Graph, BuildFromBaseOddSize)
 {
-  // 4x4 base with cell_size=3 -> 1x1 fleet graph (truncated)
+  // 4x4 base with cell_size=3 -> tiling: (4/3) = 1x1
   Graph base("../tests/assets/4x4.map");
   Graph fleet;
   fleet.build_from_base(base, 3);
