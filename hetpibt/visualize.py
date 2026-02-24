@@ -268,7 +268,7 @@ def draw_fleet_grid(ax, cell_size, base_w, base_h, color, label,
     """Draw fleet grid overlay on the base map.
 
     Non-overlapping tiling: fleet cells tile the base map in cs×cs blocks.
-    Draw the outer boundary of the fleet grid.
+    Draws grid lines at every cell_size base cells covering the full map.
     """
     fleet_w = base_w // cell_size
     fleet_h = base_h // cell_size
@@ -276,18 +276,18 @@ def draw_fleet_grid(ax, cell_size, base_w, base_h, color, label,
         return
     ls = FLEET_LINE_STYLES[style_idx % len(FLEET_LINE_STYLES)]
 
-    # draw boundary of valid fleet cell range
-    rect_x = -0.5
-    rect_y = -0.5
-    rect_w = fleet_w
-    rect_h = fleet_h
-    import matplotlib.patches as mpatches
-    rect = mpatches.Rectangle((rect_x, rect_y), rect_w, rect_h,
-                              linewidth=2, edgecolor=color, facecolor='none',
-                              linestyle=ls, alpha=0.5, zorder=2)
-    ax.add_patch(rect)
+    # Draw vertical grid lines at every cell_size base cells
+    for fx in range(fleet_w + 1):
+        x = fx * cell_size - 0.5
+        ax.axvline(x, color=color, linewidth=0.6, linestyle=ls,
+                   alpha=0.35, zorder=2)
+    # Draw horizontal grid lines
+    for fy in range(fleet_h + 1):
+        y = fy * cell_size - 0.5
+        ax.axhline(y, color=color, linewidth=0.6, linestyle=ls,
+                   alpha=0.35, zorder=2)
 
-    # label
+    # label in top-left fleet cell
     ax.text(cell_size * 0.5, cell_size * 0.5, label,
             color=color, fontsize=8, ha="center", va="center",
             alpha=0.6, fontweight="bold", zorder=2)
@@ -448,40 +448,49 @@ def main():
     ax.set_yticks([])
 
     # ------------------------------------------------------------------
-    # Draw goal markers — sized by fleet
+    # Draw goal markers — hollow rectangles showing full footprint
     # ------------------------------------------------------------------
     for i in range(n_agents):
         if i < len(goals):
             gx, gy = goals[i]
             cs = agent_cs[i]
-            bx, by = fleet_to_base(gx, gy, cs)
-            marker_size = cs * 6  # scales linearly with fleet cell_size
-            ax.plot(bx, by, "x", color=fleet_color(agent_fleets[i]),
-                    markersize=marker_size, markeredgewidth=max(1.0, cs * 0.8),
-                    alpha=0.35, zorder=3)
+            # Top-left corner in base coords
+            bx0 = gx * cs - 0.5
+            by0 = gy * cs - 0.5
+            goal_rect = mpatches.Rectangle(
+                (bx0, by0), cs, cs,
+                linewidth=2, edgecolor=fleet_color(agent_fleets[i]),
+                facecolor='none', linestyle='--', alpha=0.5, zorder=3)
+            ax.add_patch(goal_rect)
+            # X marker at center
+            cx = gx * cs + (cs - 1) / 2.0
+            cy = gy * cs + (cs - 1) / 2.0
+            ax.plot(cx, cy, "x", color=fleet_color(agent_fleets[i]),
+                    markersize=max(4, cs * 2),
+                    markeredgewidth=max(1.0, cs * 0.5),
+                    alpha=0.4, zorder=3)
 
     # ------------------------------------------------------------------
-    # Agent circles — radius proportional to cell_size, colored by fleet
+    # Agent rectangles — full cs×cs footprint, colored by fleet
     # ------------------------------------------------------------------
-    agent_circles = []
+    agent_rects = []
     agent_labels = []
     for i in range(n_agents):
         cs = agent_cs[i]
         fid = agent_fleets[i]
-        radius = cs * 0.4  # linear with cell_size
         color = fleet_color(fid)
 
-        circle = plt.Circle(
-            (0, 0), radius,
+        rect = mpatches.Rectangle(
+            (0, 0), cs, cs,
             facecolor=color, edgecolor="black",
-            linewidth=0.5, alpha=0.9, zorder=5,
+            linewidth=0.8, alpha=0.85, zorder=5,
         )
-        ax.add_patch(circle)
-        agent_circles.append(circle)
+        ax.add_patch(rect)
+        agent_rects.append(rect)
 
-        # agent ID label — scale font to fit the circle
+        # agent ID label — scale font to fit the square
         label = ax.text(0, 0, str(i), color="black",
-                        fontsize=max(5, min(9, 5 + cs)),
+                        fontsize=max(5, min(10, 4 + cs)),
                         ha="center", va="center",
                         fontweight="bold", zorder=6)
         agent_labels.append(label)
@@ -533,7 +542,9 @@ def main():
             else:
                 bx, by = 0.0, 0.0
 
-            agent_circles[i].center = (bx, by)
+            # Rectangle xy is top-left corner; center is (bx, by)
+            agent_rects[i].set_xy((bx - (cs - 1) / 2.0 - 0.5,
+                                   by - (cs - 1) / 2.0 - 0.5))
             agent_labels[i].set_position((bx, by))
 
             # highlight when agent is at its goal
@@ -544,16 +555,16 @@ def main():
                     at_goal = True
 
             if at_goal:
-                agent_circles[i].set_edgecolor("white")
-                agent_circles[i].set_linewidth(3.0)
-                agent_circles[i].set_alpha(1.0)
+                agent_rects[i].set_edgecolor("white")
+                agent_rects[i].set_linewidth(2.5)
+                agent_rects[i].set_alpha(1.0)
             else:
-                agent_circles[i].set_edgecolor("black")
-                agent_circles[i].set_linewidth(0.5)
-                agent_circles[i].set_alpha(0.9)
+                agent_rects[i].set_edgecolor("black")
+                agent_rects[i].set_linewidth(0.8)
+                agent_rects[i].set_alpha(0.85)
 
         title.set_text(f"t = {t:.1f} / {makespan}")
-        return agent_circles + agent_labels + [title]
+        return agent_rects + agent_labels + [title]
 
     # Initialize
     update(0)
