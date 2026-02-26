@@ -1,0 +1,5 @@
+# 2 cs=2 agents only on empty-8-8.map
+# Agent 0: cs=2, start=(0,0), goal=(6,6). Fleet: (0,0)->(3,3)
+2 0 0 6 6
+# Agent 1: cs=2, start=(6,6), goal=(0,0). Fleet: (3,3)->(0,0)
+2 6 6 0 0

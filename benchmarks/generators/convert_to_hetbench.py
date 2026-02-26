@@ -11,11 +11,12 @@ import sys
 
 
 # Fleet definitions: cs -> (fleet_id, velocity)
+# velocity = 1/cs (inverse of cell_size)
 FLEET_DEFS = {
-    1:  (0, 1.0),
-    3:  (1, 0.33),
-    7:  (2, 0.14),
-    11: (3, 0.09),
+    1:  (0, 1),
+    3:  (1, 1),
+    5:  (2, 2),
+    7:  (3, 3),
 }
 
 

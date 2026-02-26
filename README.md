@@ -1,6 +1,6 @@
-# gb
+# gb — Heterogeneous Multi-Agent Pathfinding
 
-Monorepo containing **HetPIBT** (heterogeneous Priority Inheritance with BackTracking) and the reference **LaCAM** implementation it builds on.
+Monorepo for heterogeneous MAPF research, containing **het_rt_lacam** (our solver) and reference implementations.
 
 ## Prerequisites
 
@@ -12,101 +12,83 @@ Monorepo containing **HetPIBT** (heterogeneous Priority Inheritance with BackTra
 
 ```
 gb/
-├── hetpibt/          # HetPIBT — heterogeneous multi-agent pathfinding
-├── lacam/            # LaCAM — reference MAPF solver
-└── docs/             # Papers and documentation
+├── het_rt_lacam/       # Our solver (heterogeneous real-time LaCAM)
+├── benchmarks/         # Maps, scenarios, and generators
+│   ├── maps/           # .map files (64, 77, 105, 154 grids)
+│   ├── scenarios/      # .scen files (het_bench + MAPF format)
+│   └── generators/     # Python scenario/map generators
+├── experiments/        # Results, replays, and visualizations
+├── tools/              # Runner scripts, analysis, utilities
+├── third_party/        # Reference implementations
+│   ├── hetpibt/        # HetPIBT solver
+│   ├── lacam/          # LaCAM reference
+│   ├── lacam3/         # LaCAM3 reference
+│   ├── pibt_rs/        # pibt_rs (Rust)
+│   ├── pypibt/         # pypibt (Python)
+│   └── cbsh2rtc/       # CBS-H2 reference solutions
+├── docs/               # Papers (hetpibt.pdf, G-MAPF.pdf)
+└── venv/               # Python virtual environment
 ```
 
 ## Building
 
-### HetPIBT
+### het_rt_lacam (primary solver)
 
 ```bash
-cd hetpibt
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cd het_rt_lacam
+cmake -B build -G "Visual Studio 17 2022"
 cmake --build build --config Release
 ```
 
-### LaCAM
+### HetPIBT (reference)
 
 ```bash
-cd lacam
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cd third_party/hetpibt
+cmake -B build -G "Visual Studio 17 2022"
 cmake --build build --config Release
 ```
 
 ## Running
 
-### HetPIBT
+### het_rt_lacam
 
 ```bash
-cd hetpibt
-./build/Release/main -m assets/room-64-64-8.map -s assets/room-64-64-8.scen
+cd het_rt_lacam
+./build/Release/main.exe -m ../benchmarks/maps/corridor_speed_105.map \
+  -i ../benchmarks/scenarios/corridor_speed_105_00_hb.scen \
+  --swap-xy -v 1 -t 60
 ```
 
-Options:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-m, --map` | Map file (required) | — |
-| `-s, --scen` | Scenario file (required) | — |
-| `-o, --output` | Output file | `result.txt` |
-| `-v, --verbose` | Verbosity (0–2) | `0` |
-| `-t, --time_limit` | Time limit in ms | `60000` |
-| `--max_timesteps` | Max simulation steps | `1000` |
-| `--seed` | Random seed | `0` |
-
-### LaCAM
-
-```bash
-cd lacam
-./build/Release/main -m assets/random-32-32-10.map -i assets/random-32-32-10-random-1.scen -N 50
-```
-
-Options:
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-m, --map` | Map file (required) | — |
-| `-i, --scen` | Scenario file | `""` |
-| `-N, --num` | Number of agents (required) | — |
+| `-i, --scen` | Scenario file (het_bench or MAPF) | `""` |
+| `-N, --num` | Number of agents (MAPF mode) | `0` |
 | `-o, --output` | Output file | `./build/result.txt` |
-| `-v, --verbose` | Verbosity | `0` |
+| `-v, --verbose` | Verbosity (0–2) | `0` |
 | `-t, --time_limit_sec` | Time limit in seconds | `10` |
 | `-s, --seed` | Random seed | `0` |
+| `--swap-xy` | Swap x/y in het_bench coords | `false` |
 
 ## Tests
 
 ```bash
-# HetPIBT
-cd hetpibt/build && ./Release/test_all.exe
-
-# LaCAM
-cd lacam/build && ./Release/test_all.exe
+cd het_rt_lacam/build && ./Release/test_all.exe   # 14 tests
+cd third_party/hetpibt/build && ./Release/test_all.exe  # 12 tests
 ```
 
 ## Visualization
 
-### HetPIBT
-
 ```bash
-cd hetpibt
-python visualize.py --map assets/room-64-64-8.map --result build/result.txt
+# het_rt_lacam native visualizer
+python het_rt_lacam/visualize.py \
+  --result experiments/replays/replay_hetlacam_corridor_speed.txt \
+  --map benchmarks/maps/corridor_speed_105.map
+
+# HetPIBT visualizer
+python third_party/hetpibt/visualize.py \
+  --map third_party/hetpibt/assets/room-64-64-8.map \
+  --result third_party/hetpibt/build/result.txt
 ```
 
-Options: `--scen`, `--speed` (ms/frame, default 150), `--substeps` (interpolation, default 4), `--no-grid-overlay`.
-
-### LaCAM
-
-```bash
-cd lacam
-python visualize.py --result build/result.txt
-```
-
-Options: `--map` (auto-detected from result), `--speed` (ms/frame, default 150).
-
-## Collision Checking
-
-Verify a HetPIBT solution has no collisions:
-
-```bash
-python hetpibt/tests/assets/check_collisions.py hetpibt/build/result.txt
-```
+Controls: `Space` (pause/play), `Left/Right` (step), `Up/Down` (speed), `g` (goal lines), `Q` (quit).

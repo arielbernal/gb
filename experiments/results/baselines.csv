@@ -1,0 +1,3 @@
+scenario,solver,N,solved,goals_reached,goal_pct,SOC,makespan,comp_time_ms
+bottleneck_77_hetbench.scen,hetpibt,12,True,12/12,100.0,507,48,2468
+bottleneck_77_hetbench.scen,het_lacam,,False,,,,,

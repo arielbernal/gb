@@ -1,0 +1,9 @@
+# 6-agent heterogeneous test on empty-8-8.map
+# Format: cs sx sy gx gy
+# 3 cs=1 agents, 1 cs=2 agent, 2 cs=4 agents
+1 0 0 7 0
+1 0 7 7 7
+1 7 0 0 7
+2 0 0 6 6
+4 0 0 4 4
+4 4 0 0 4

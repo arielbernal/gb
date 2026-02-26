@@ -1,0 +1,11 @@
+# 4-agent heterogeneous on empty-8-8.map - non-overlapping footprints
+# Agent 0: cs=1, start=(7,7), goal=(0,7)
+1 7 7 0 7
+# Agent 1: cs=1, start=(3,3), goal=(5,3)
+1 3 3 5 3
+# Agent 2: cs=2, start=(0,0)->fleet(0,0), goal=(4,4)->fleet(2,2)
+#   start fp: [0,2)x[0,2), goal fp: [4,6)x[4,6)
+2 0 0 4 4
+# Agent 3: cs=2, start=(4,4)->fleet(2,2), goal=(0,4)->fleet(0,2)
+#   start fp: [4,6)x[4,6), goal fp: [0,2)x[4,6)
+2 4 4 0 4

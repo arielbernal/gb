@@ -1,0 +1,6 @@
+# Simple 2-agent heterogeneous test on empty-8-8.map
+# Format: cs sx sy gx gy
+# Agent 0: cs=1, start=(0,0), goal=(7,0)
+1 0 0 7 0
+# Agent 1: cs=2, start=(6,6), goal=(0,6)
+2 6 6 0 6

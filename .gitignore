@@ -26,3 +26,13 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+NUL
+
+# Archives
+*.7z
+
+# Rust build artifacts
+**/target/
+
+# Agents workspace temp files
+agents/*/temp/

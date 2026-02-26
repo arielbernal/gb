@@ -20,6 +20,7 @@ import matplotlib.colors as mcolors
 FLEET_COLORS = {
     1:  "#f38ba8",  # pink
     3:  "#89b4fa",  # blue
+    5:  "#f9e2af",  # yellow
     7:  "#a6e3a1",  # green
     11: "#fab387",  # orange
 }
@@ -27,6 +28,7 @@ FLEET_COLORS = {
 FLEET_LABELS = {
     1:  "cs=1",
     3:  "cs=3",
+    5:  "cs=5",
     7:  "cs=7",
     11: "cs=11",
 }

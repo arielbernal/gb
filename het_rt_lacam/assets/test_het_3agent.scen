@@ -1,0 +1,11 @@
+# 3-agent: 1 cs=1 + 2 cs=2 on empty-8-8.map
+# All start and goal footprints are non-overlapping on base grid.
+#
+# Agent 0: cs=1, start=base(3,0), goal=base(3,7)
+1 3 0 3 7
+# Agent 1: cs=2, start=base(0,0)->fleet(0,0), goal=base(4,4)->fleet(2,2)
+#   start footprint: [0,2)x[0,2), goal footprint: [4,6)x[4,6)
+2 0 0 4 4
+# Agent 2: cs=2, start=base(4,4)->fleet(2,2), goal=base(0,0)->fleet(0,0)
+#   start footprint: [4,6)x[4,6), goal footprint: [0,2)x[0,2)
+2 4 4 0 0

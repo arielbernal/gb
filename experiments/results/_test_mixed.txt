@@ -1,0 +1,17 @@
+agents=5
+map_file=corridor_speed_105.map
+solver=het_lacam
+solved=1
+soc=482
+soc_lb=424
+makespan=167
+makespan_lb=160
+sum_of_loss=467
+comp_time=9
+seed=0
+checkpoints=-1,
+comp_time_initial_solution=8
+cost_initial_solution=468
+search_iteration=168
+num_high_level_node=168
+num_low_level_node=952
