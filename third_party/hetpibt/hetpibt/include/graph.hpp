@@ -42,5 +42,3 @@ struct Graph {
 
   int size() const;  // the number of vertices, |V|
 };
-
-std::ostream& operator<<(std::ostream& os, const Vertex* v);

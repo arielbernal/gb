@@ -3,21 +3,17 @@
  */
 #pragma once
 
-#include <array>
 #include <chrono>
 #include <climits>
 #include <cmath>
 #include <deque>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <numeric>
 #include <queue>
 #include <random>
 #include <regex>
-#include <set>
 #include <sstream>
-#include <stack>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -48,11 +44,9 @@ struct Deadline {
 
   Deadline(double _time_limit_ms = 0);
   double elapsed_ms() const;
-  double elapsed_ns() const;
 };
 
 double elapsed_ms(const Deadline* deadline);
-double elapsed_ns(const Deadline* deadline);
 bool is_expired(const Deadline* deadline);
 
 float get_random_float(std::mt19937* MT, float from = 0, float to = 1);

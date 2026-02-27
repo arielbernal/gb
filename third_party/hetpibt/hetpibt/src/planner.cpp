@@ -75,13 +75,6 @@ Planner::Planner(const HetInstance* _ins, const Deadline* _deadline,
   // EXTENSION: position history for anti-oscillation
   recent_cells.resize(N);
 
-  // EXTENSION: speed counter from Fleet.velocity
-  agent_speed.resize(N, 1);
-  for (int i = 0; i < N; ++i) {
-    auto* fleet = ins->get_fleet(i);
-    if (fleet) agent_speed[i] = std::max(1, static_cast<int>(fleet->velocity));
-  }
-
   // initial reservation: every agent occupies its start cell at t=0
   for (int i = 0; i < N; ++i) {
     if (ins->starts[i] == nullptr) continue;
@@ -132,13 +125,6 @@ void Planner::update_priorities(int step)
     // This ensures stuck agents rapidly outprioritize progressing ones.
     ins->agents[i]->priority += 1.0f + stuck_count[i];
   }
-}
-
-void Planner::recalculate_costs()
-{
-  // no-op: distance table is a static heuristic computed once on the
-  // map topology.  Agent-agent conflicts (including goal-reached agents)
-  // are handled dynamically by the reservation system + push_agent.
 }
 
 // Algorithm 2: per-agent space-time BFS
@@ -450,8 +436,7 @@ bool Planner::push_agent(int agent_id, int time,
 }
 
 // Algorithm 1: priority traversal search for one agent
-bool Planner::attempt_solve_for_agent(int agent_id, int time,
-                                      int forward_lookup)
+bool Planner::attempt_solve_for_agent(int agent_id, int time)
 {
   std::unordered_set<int> in_chain;
   std::unordered_set<int> keep_out;
@@ -474,46 +459,6 @@ bool Planner::attempt_solve_for_agent(int agent_id, int time,
     P.reserve(stay);
   }
   return false;
-}
-
-// walk from leaf to root, reserving trajectories with cascading delays
-void Planner::backtrack_and_reserve(const std::vector<DepNode>& arena,
-                                    int leaf_idx, int time)
-{
-  // collect the chain from leaf to root
-  std::vector<int> chain;
-  int idx = leaf_idx;
-  while (idx >= 0) {
-    chain.push_back(idx);
-    idx = arena[idx].parent;
-  }
-  // chain[0] = leaf (deepest displaced agent)
-  // chain[last] = root (the original requesting agent)
-
-  // reserve from leaf to root with cascading start times
-  // leaf starts at its current endpoint time
-  int next_start = time;
-
-  for (int i = 0; i < static_cast<int>(chain.size()); ++i) {
-    auto& node = arena[chain[i]];
-    auto ep = P.get_endpoint(node.agent_id);
-    int start = std::max(next_start, ep.end_time);
-
-    Trajectory traj;
-    traj.agent_id = node.agent_id;
-    traj.fleet_id = ins->agents[node.agent_id]->fleet_id;
-    traj.start_time = start;
-    traj.positions = node.pp.path;
-
-    // retry with incrementing start_time if collision (timing cascade)
-    while (!P.try_reserve(traj)) {
-      traj.start_time++;
-      if (traj.start_time > time + 100) break;  // safety limit
-    }
-
-    // the next agent in the chain must start after this one
-    next_start = traj.start_time + 1;
-  }
 }
 
 Solution Planner::solve(int max_timesteps)
@@ -547,8 +492,6 @@ Solution Planner::solve(int max_timesteps)
       return pa > pb;
     });
 
-    bool needs_recalc = false;
-
     for (int aid : order) {
       if (goal_reached.count(aid)) continue;
 
@@ -556,78 +499,16 @@ Solution Planner::solve(int max_timesteps)
       auto ep = P.get_endpoint(aid);
       if (ep.end_time > step) continue;
 
-      // check if agent is at goal (check every step, not just active ones)
+      // check if agent is at goal
       if (ins->goals[aid] != nullptr && ep.cell_index == ins->goals[aid]->index) {
         goal_reached.insert(aid);
         goal_time[aid] = step;
-        needs_recalc = true;
         info(2, verbose, "agent ", aid, " reached goal, step ", step);
         continue;
       }
 
-      // SPEED-COUNTER: agent only plans on steps that are multiples of its
-      // speed value. On off-steps, hold position. Agents are still pushable
-      // by others on off-steps (push_agent is called via other agents' chains).
-      if (step % agent_speed[aid] != 0) {
-        if (ep.fleet_id >= 0) {
-          Trajectory stay;
-          stay.agent_id = aid;
-          stay.fleet_id = ep.fleet_id;
-          stay.start_time = ep.end_time;
-          stay.positions = {ep.cell_index};
-          P.reserve(stay);
-        }
-        continue;
-      }
-
-#ifdef HETPIBT_DEBUG
-      // DEBUG: trace specific agents — build with -DHETPIBT_DEBUG to enable
-      if (verbose >= 3 && (aid == 3 || aid == 6) && step >= 28 && step <= 50) {
-        auto* fleet = ins->get_fleet(aid);
-        int fw = fleet->G.width;
-        int fx = ep.cell_index % fw;
-        int fy = ep.cell_index / fw;
-        float prio = ins->agents[aid]->priority + tie_breakers[aid];
-        fprintf(stderr, "\n[DBG] step=%d agent=%d pos=(%d,%d) prio=%.1f "
-                "elapsed=%d stuck=%d speed=%d\n",
-                step, aid, fx, fy, prio, elapsed[aid], stuck_count[aid],
-                agent_speed[aid]);
-
-        std::unordered_set<int> dbg_ko;
-        int bfs_depth = std::max(2, fleet->cell_size);
-        auto dbg_cands = get_next_locations(aid, step, dbg_ko, bfs_depth);
-        fprintf(stderr, "[DBG]   %zu candidates (bfs_depth=%d):\n",
-                dbg_cands.size(), bfs_depth);
-        for (size_t ci = 0; ci < dbg_cands.size(); ++ci) {
-          auto& pp = dbg_cands[ci];
-          int end_cell = pp.path.back();
-          int ex = end_cell % fw, ey = end_cell / fw;
-          auto* ev = fleet->G.U[end_cell];
-          int d = ev ? D.get(aid, ev->id) : 9999;
-          fprintf(stderr, "[DBG]   [%zu] endpoint=(%d,%d) dist=%d blockers=%zu",
-                  ci, ex, ey, d, pp.blocking_agents.size());
-          if (!pp.blocking_agents.empty()) {
-            fprintf(stderr, " blocked_by={");
-            for (size_t bi = 0; bi < pp.blocking_agents.size(); ++bi) {
-              if (bi > 0) fprintf(stderr, ",");
-              fprintf(stderr, "%d", pp.blocking_agents[bi]);
-            }
-            fprintf(stderr, "}");
-          }
-          fprintf(stderr, " path=[");
-          for (size_t pi = 0; pi < pp.path.size(); ++pi) {
-            if (pi > 0) fprintf(stderr, ",");
-            fprintf(stderr, "(%d,%d)", pp.path[pi] % fw, pp.path[pi] / fw);
-          }
-          fprintf(stderr, "]\n");
-        }
-      }
-#endif
-
-      attempt_solve_for_agent(aid, step, 1);
+      attempt_solve_for_agent(aid, step);
     }
-
-    if (needs_recalc) recalculate_costs();
 
     // EXTENSION: update recent position history for anti-oscillation
     for (int i = 0; i < N; ++i) {

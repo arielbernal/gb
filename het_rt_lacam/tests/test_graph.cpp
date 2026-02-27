@@ -38,8 +38,8 @@ TEST(GraphTest, HetConfigHash)
 
   HetConfigHasher hasher;
   ASSERT_NE(hasher(c1), hasher(c2));
-  ASSERT_TRUE(is_same_het_config(c1, c1));
-  ASSERT_FALSE(is_same_het_config(c1, c2));
+  ASSERT_TRUE(c1 == c1);
+  ASSERT_FALSE(c1 == c2);
 }
 
 TEST(GraphTest, ToBaseCells)

@@ -52,7 +52,4 @@ struct CollisionChecker {
   // returns vector of (other_fleet_id, other_cell_index)
   std::vector<std::pair<int, int>> get_blocked_nodes(
       int fleet_id, int x, int y, const Fleets& fleets) const;
-
-  // convert real-world coordinate to grid cell in a specific fleet
-  std::pair<int, int> to_grid_space(int fleet_id, float wx, float wy) const;
 };

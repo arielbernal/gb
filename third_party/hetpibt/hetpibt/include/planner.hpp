@@ -4,12 +4,8 @@
  * Implements:
  *   - Priority traversal search (Algorithm 1 from the paper)
  *   - Per-agent space-time BFS (Algorithm 2)
- *   - Dependency graph with DepNode arena for backtrack_and_reserve
- *   - WinPIBT-style windowed reservation with variable depth
- *
- * The dependency graph is an arena of DepNodes.  When a conflict-free
- * leaf is found, we walk parent pointers back to the root, reserving
- * each agent's trajectory with cascading start times.
+ *   - Recursive push_agent with cross-fleet adaptive BFS depth
+ *   - Windowed reservation with variable depth
  */
 #pragma once
 
@@ -44,10 +40,6 @@ struct Planner {
   // EXTENSION: recent position history for anti-oscillation
   std::vector<std::deque<int>> recent_cells;
 
-  // EXTENSION: speed counter — agent moves only when step % speed == 0
-  // Derived from Fleet.velocity (cast to int, min 1).
-  std::vector<int> agent_speed;
-
   const bool goal_lock;  // permanently lock agents at goals (pibt_rs-style)
 
   Planner(const HetInstance* _ins, const Deadline* _deadline,
@@ -58,7 +50,7 @@ struct Planner {
 
   // Algorithm 1: attempt to solve for one agent at a given timestep
   // returns true if a trajectory was reserved
-  bool attempt_solve_for_agent(int agent_id, int time, int forward_lookup);
+  bool attempt_solve_for_agent(int agent_id, int time);
 
   // Algorithm 2: per-agent space-time BFS
   // returns candidate proposed paths sorted by (distance_to_goal, #blocking)
@@ -67,10 +59,6 @@ struct Planner {
                                                int depth);
 
  private:
-  // reserve trajectories along the dependency chain from leaf to root
-  void backtrack_and_reserve(const std::vector<DepNode>& arena, int leaf_idx,
-                             int time);
-
   // recursive push: try to move agent_id out of the way at time `time`,
   // avoiding base cells in keep_out.  Pushes blockers recursively.
   // min_bfs_depth: minimum BFS lookahead (set by parent's cell_size so
@@ -82,9 +70,6 @@ struct Planner {
 
   // update priorities for all agents
   void update_priorities(int step);
-
-  // recalculate cost maps after agents reach their goals
-  void recalculate_costs();
 };
 
 // convenience entry point

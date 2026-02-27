@@ -44,14 +44,6 @@ std::vector<int> CollisionChecker::to_base_cells(int fleet_id, int cell_index,
   return base_cells;
 }
 
-std::pair<int, int> CollisionChecker::to_grid_space(int fleet_id, float wx,
-                                                    float wy) const
-{
-  float cs = grid_sizes[fleet_id];
-  return {static_cast<int>(std::floor(wx / cs)),
-          static_cast<int>(std::floor(wy / cs))};
-}
-
 std::vector<std::pair<int, int>> CollisionChecker::get_blocked_nodes(
     int fleet_id, int x, int y, const Fleets& fleets) const
 {

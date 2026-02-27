@@ -12,12 +12,6 @@
 #pragma once
 #include "fleet.hpp"
 
-// timed waypoint on a fleet's graph
-struct TimedCell {
-  int cell_index;  // vertex index on the fleet's graph (width * y + x)
-  int time;        // discrete timestep
-};
-
 // trajectory: timed series of cells for one agent on its fleet's graph
 struct Trajectory {
   int agent_id;
@@ -26,7 +20,6 @@ struct Trajectory {
   std::vector<int> positions;  // cell_index at each timestep from start_time
 
   int end_time() const;
-  int cell_at(int t) const;  // returns cell_index at timestep t
 };
 
 // path: untimed sequence of cells (used during planning before timing)
@@ -36,14 +29,6 @@ using Path = std::vector<int>;  // sequence of cell_index on a fleet graph
 struct ProposedPath {
   Path path;                       // untimed cells the agent would traverse
   std::vector<int> blocking_agents;  // agents that must move out
-};
-
-// dependency node for backtrack_and_reserve
-// stored in an arena (vector); parent index = -1 for root
-struct DepNode {
-  int agent_id;
-  int parent;       // index in the arena, -1 = root
-  ProposedPath pp;  // the proposed path for this agent
 };
 
 // the reservation table P
@@ -113,19 +98,12 @@ struct ReservationTable {
   std::vector<int> get_occupants(int fleet_id, int cell_index,
                                  int time) const;
 
-  // remove all reservations for an agent
-  void remove_agent(int agent_id);
-
   // get endpoint for an agent (-1 time if not found)
   AgentEndpoint get_endpoint(int agent_id) const;
-
-  void clear();
 
  private:
   // project a fleet cell to base cells and insert into st_map
   void insert_cell(int agent_id, int fleet_id, int cell_index, int time);
-  // collect all base cells for a fleet cell (including cross-fleet ghosts)
-  std::vector<int> get_all_base_cells(int fleet_id, int cell_index) const;
   // update the parked_at_cell index when an agent's endpoint changes
   void update_parked_index(int agent_id, const AgentEndpoint* old_ep,
                            const AgentEndpoint* new_ep);

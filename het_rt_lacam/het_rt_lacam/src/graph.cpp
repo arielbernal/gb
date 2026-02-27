@@ -187,20 +187,6 @@ std::vector<int> to_base_cells_xy(int fx, int fy, int cell_size, int base_width)
   return cells;
 }
 
-// ---------------------------------------------------------------------------
-// HetConfig utilities
-// ---------------------------------------------------------------------------
-bool is_same_het_config(const HetConfig &C1, const HetConfig &C2)
-{
-  const auto N = C1.size();
-  if (N != C2.size()) return false;
-  for (size_t i = 0; i < N; ++i) {
-    if (C1.positions[i]->id != C2.positions[i]->id) return false;
-    if (C1.kappa[i] != C2.kappa[i]) return false;
-  }
-  return true;
-}
-
 uint HetConfigHasher::operator()(const HetConfig &C) const
 {
   uint hash = C.size();
@@ -211,9 +197,6 @@ uint HetConfigHasher::operator()(const HetConfig &C) const
   return hash;
 }
 
-// ---------------------------------------------------------------------------
-// Original lacam3 utilities
-// ---------------------------------------------------------------------------
 bool is_same_config(const Config &C1, const Config &C2)
 {
   const auto N = C1.size();
@@ -221,34 +204,4 @@ bool is_same_config(const Config &C1, const Config &C2)
     if (C1[i]->id != C2[i]->id) return false;
   }
   return true;
-}
-
-uint ConfigHasher::operator()(const Config &C) const
-{
-  uint hash = C.size();
-  for (auto &v : C) {
-    hash ^= v->id + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-  }
-  return hash;
-}
-
-std::ostream &operator<<(std::ostream &os, const Vertex *v)
-{
-  os << v->index;
-  return os;
-}
-
-std::ostream &operator<<(std::ostream &os, const Config &Q)
-{
-  for (auto v : Q) os << v << ",";
-  return os;
-}
-
-std::ostream &operator<<(std::ostream &os, const HetConfig &Q)
-{
-  for (size_t i = 0; i < Q.size(); ++i) {
-    os << "(" << Q.positions[i] << ",k=" << Q.kappa[i] << ")";
-    if (i + 1 < Q.size()) os << ",";
-  }
-  return os;
 }

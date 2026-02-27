@@ -7,14 +7,6 @@ int Trajectory::end_time() const
   return start_time + static_cast<int>(positions.size()) - 1;
 }
 
-int Trajectory::cell_at(int t) const
-{
-  int idx = t - start_time;
-  if (idx < 0) return positions.front();
-  if (idx >= static_cast<int>(positions.size())) return positions.back();
-  return positions[idx];
-}
-
 // --- ReservationTable ---
 
 ReservationTable::ReservationTable() : cc(nullptr), fleets(nullptr) {}
@@ -23,19 +15,6 @@ ReservationTable::ReservationTable(const CollisionChecker* _cc,
                                    const Fleets* _fleets)
     : cc(_cc), fleets(_fleets)
 {
-}
-
-std::vector<int> ReservationTable::get_all_base_cells(int fleet_id,
-                                                      int cell_index) const
-{
-  auto* fleet = (*fleets)[fleet_id];
-  int fw = fleet->G.width;
-  // get base cells for this fleet cell
-  auto base_cells = cc->to_base_cells(fleet_id, cell_index, fw);
-
-  // also get cells on other fleet graphs that overlap (for ghost
-  // reservations) — we project through base grid for consistency
-  return base_cells;
 }
 
 void ReservationTable::update_parked_index(int agent_id,
@@ -281,40 +260,10 @@ bool ReservationTable::try_reserve(const Trajectory& traj)
   return true;
 }
 
-void ReservationTable::remove_agent(int agent_id)
-{
-  auto it = agent_cells.find(agent_id);
-  if (it != agent_cells.end()) {
-    for (auto key : it->second) {
-      auto map_it = st_map.find(key);
-      if (map_it != st_map.end()) {
-        auto& vec = map_it->second;
-        vec.erase(std::remove(vec.begin(), vec.end(), agent_id), vec.end());
-        if (vec.empty()) st_map.erase(map_it);
-      }
-    }
-    agent_cells.erase(it);
-  }
-  auto ep_it = agent_last.find(agent_id);
-  if (ep_it != agent_last.end()) {
-    update_parked_index(agent_id, &ep_it->second, nullptr);
-    agent_last.erase(ep_it);
-  }
-}
-
 ReservationTable::AgentEndpoint ReservationTable::get_endpoint(
     int agent_id) const
 {
   auto it = agent_last.find(agent_id);
   if (it != agent_last.end()) return it->second;
   return {-1, -1, -1};
-}
-
-void ReservationTable::clear()
-{
-  st_map.clear();
-  agent_cells.clear();
-  agent_last.clear();
-  traj_log.clear();
-  parked_at_cell.clear();
 }

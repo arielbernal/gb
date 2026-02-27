@@ -10,7 +10,7 @@ import sys
 import os
 
 # Reuse gen_scenario.py functions
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'hetpibt', 'tools'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'third_party', 'hetpibt', 'tools'))
 from gen_scenario import (load_map, build_fleet_grid, flood_fill,
                           place_agents, verify_placements)
 

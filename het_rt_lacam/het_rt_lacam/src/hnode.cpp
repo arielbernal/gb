@@ -140,13 +140,6 @@ LNode *HNode::get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins)
   return L;
 }
 
-std::ostream &operator<<(std::ostream &os, const HNode *H)
-{
-  os << "f=" << std::setw(6) << H->f << "\tg=" << std::setw(6) << H->g
-     << "\th=" << std::setw(6) << H->h << "\tQ=" << H->C;
-  return os;
-}
-
 bool CompareHNodePointers::operator()(const HNode *l, const HNode *r) const
 {
   const auto N = l->C.size();

@@ -46,7 +46,6 @@ struct Planner {
   static bool FLG_MULTI_THREAD;
   static float RANDOM_INSERT_PROB1;
   static float RANDOM_INSERT_PROB2;
-  static bool FLG_RANDOM_INSERT_INIT_NODE;
 
   // logging
   static std::string MSG;

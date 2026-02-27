@@ -20,8 +20,6 @@ struct Vertex {
 };
 using Vertices = std::vector<Vertex *>;
 using Config = std::vector<Vertex *>;  // locations for all agents
-using Path = std::vector<Vertex *>;
-using Paths = std::vector<Path>;
 
 // ---------------------------------------------------------------------------
 // HetConfig: configuration augmented with speed-phase counters
@@ -31,7 +29,6 @@ struct HetConfig {
   std::vector<int> kappa;   // speed phase counter per agent, 0..cell_size-1
 
   size_t size() const { return positions.size(); }
-  Vertex *operator[](size_t i) const { return positions[i]; }
 
   bool operator==(const HetConfig &other) const
   {
@@ -43,8 +40,6 @@ struct HetConfig {
     return true;
   }
 };
-
-bool is_same_het_config(const HetConfig &C1, const HetConfig &C2);
 
 struct HetConfigHasher {
   uint operator()(const HetConfig &C) const;
@@ -93,20 +88,4 @@ inline std::vector<int> to_base_cells(int cell_index, int fleet_width,
                           cell_size, base_width);
 }
 
-// ---------------------------------------------------------------------------
-// Original lacam3 utilities (kept for compatibility)
-// ---------------------------------------------------------------------------
 bool is_same_config(const Config &C1, const Config &C2);
-
-struct ConfigHasher {
-  uint operator()(const Config &C) const;
-};
-
-inline int manhattanDist(Vertex *a, Vertex *b)
-{
-  return std::abs(a->x - b->x) + std::abs(a->y - b->y);
-}
-
-std::ostream &operator<<(std::ostream &os, const Vertex *v);
-std::ostream &operator<<(std::ostream &os, const Config &Q);
-std::ostream &operator<<(std::ostream &os, const HetConfig &Q);

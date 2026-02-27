@@ -166,64 +166,9 @@ Instance::Instance(const std::string &scen_filename,
   N = (uint)starts.size();
 }
 
-// ---------------------------------------------------------------------------
-// Programmatic construction
-// ---------------------------------------------------------------------------
-Instance::Instance(const std::string &map_filename,
-                   const std::vector<int> &start_indexes,
-                   const std::vector<int> &goal_indexes,
-                   const std::vector<int> &agent_fleet_ids,
-                   const std::vector<int> &cell_sizes)
-    : base_graph(map_filename), N((uint)start_indexes.size()), num_fleets(0)
-{
-  base_width = base_graph.width;
-  base_height = base_graph.height;
-
-  // Discover fleets
-  std::map<int, int> fleet_cs;
-  for (size_t i = 0; i < N; ++i)
-    fleet_cs[agent_fleet_ids[i]] = cell_sizes[i];
-
-  int max_fid = 0;
-  for (auto &[fid, cs] : fleet_cs) max_fid = std::max(max_fid, fid);
-  num_fleets = max_fid + 1;
-  fleet_graphs.resize(num_fleets);
-  fleet_cell_sizes.resize(num_fleets, 1);
-  fleet_speed_periods.resize(num_fleets, 1);
-  for (auto &[fid, cs] : fleet_cs) {
-    fleet_cell_sizes[fid] = cs;
-    fleet_speed_periods[fid] = cs;  // default: speed_period = cell_size
-    fleet_graphs[fid].build_from_base(base_graph, cs);
-  }
-
-  agents.resize(N);
-  starts.resize(N, nullptr);
-  goals.resize(N, nullptr);
-  for (size_t i = 0; i < N; ++i) {
-    int fid = agent_fleet_ids[i];
-    agents[i] = {fid, cell_sizes[i]};
-    auto &fg = fleet_graphs[fid];
-    starts[i] = fg.U[start_indexes[i]];
-    goals[i] = fg.U[goal_indexes[i]];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Accessors
-// ---------------------------------------------------------------------------
-Graph *Instance::fleet_graph(int agent_id)
-{
-  return &fleet_graphs[agents[agent_id].fleet_id];
-}
-
 const Graph *Instance::fleet_graph(int agent_id) const
 {
   return &fleet_graphs[agents[agent_id].fleet_id];
-}
-
-int Instance::cell_size(int agent_id) const
-{
-  return agents[agent_id].cell_size;
 }
 
 int Instance::speed_period(int agent_id) const
@@ -292,14 +237,6 @@ HetConfig Instance::make_start_config() const
 {
   HetConfig C;
   C.positions = starts;
-  C.kappa.assign(N, 0);
-  return C;
-}
-
-HetConfig Instance::make_goal_config() const
-{
-  HetConfig C;
-  C.positions = goals;
   C.kappa.assign(N, 0);
   return C;
 }

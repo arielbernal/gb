@@ -12,13 +12,8 @@ HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed)
       base_occupied_next(base_size, NO_AGENT),
       max_fleet_vertices(0)
 {
-  // Per-fleet occupancy arrays
-  fleet_occupied_now.resize(ins->num_fleets);
-  fleet_occupied_next.resize(ins->num_fleets);
   for (int f = 0; f < ins->num_fleets; ++f) {
     int sz = ins->fleet_graphs[f].size();
-    fleet_occupied_now[f].assign(sz, NO_AGENT);
-    fleet_occupied_next[f].assign(sz, NO_AGENT);
     if (sz > max_fleet_vertices) max_fleet_vertices = sz;
   }
 

@@ -8,7 +8,6 @@ int Planner::PIBT_NUM = 1;      // Phase 1: single PIBT
 bool Planner::FLG_MULTI_THREAD = false;
 float Planner::RANDOM_INSERT_PROB1 = 0.0;
 float Planner::RANDOM_INSERT_PROB2 = 0.0;
-bool Planner::FLG_RANDOM_INSERT_INIT_NODE = false;
 
 std::string Planner::MSG;
 int Planner::CHECKPOINTS_DURATION = 5000;
@@ -66,9 +65,7 @@ Solution Planner::solve()
     // random diversification after initial solution
     if (H_goal != nullptr && RANDOM_INSERT_PROB2 > 0 &&
         get_random_float(MT) < RANDOM_INSERT_PROB2) {
-      H = FLG_RANDOM_INSERT_INIT_NODE
-              ? H_init
-              : OPEN[get_random_int(MT, 0, (int)OPEN.size() - 1)];
+      H = OPEN[get_random_int(MT, 0, (int)OPEN.size() - 1)];
     }
 
     // pruning: skip if f >= best known goal f

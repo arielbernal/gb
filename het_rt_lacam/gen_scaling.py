@@ -1,10 +1,10 @@
 """Generate scaling scenarios for het_bench with cs=1,6,11 on room120.map."""
 import sys
-sys.path.insert(0, "E:/gb/hetpibt/tools")
+sys.path.insert(0, "E:/gb/third_party/hetpibt/tools")
 import gen_scenario as gen
 import random
 
-MAP = "E:/gb/het_lacam/assets/room120.map"
+MAP = "E:/gb/benchmarks/maps/room120.map"
 FLEET_DEFS = [(1, 1.0), (6, 0.17), (11, 0.09)]
 
 # Agent distributions: (cs1, cs6, cs11) for each total
@@ -52,7 +52,7 @@ def generate(total, counts, seed=42):
     gen.verify_placements(all_agents, fleet_grids)
     all_agents.sort(key=lambda a: a[0])
 
-    out = f"E:/gb/het_lacam/assets/scaling_{total}.scen"
+    out = f"E:/gb/benchmarks/scenarios/scaling_{total}.scen"
     with open(out, "w") as f:
         for a in all_agents:
             aid, fid, cs, vel, sx, sy, gx, gy, fw, fh = a

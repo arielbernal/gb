@@ -17,9 +17,9 @@ import sys
 import tempfile
 
 HETPIBT = os.environ.get(
-    "HETPIBT", r"E:\gb\hetpibt\build\Release\main.exe")
+    "HETPIBT", r"E:\gb\third_party\hetpibt\build\Release\main.exe")
 HET_LACAM = os.environ.get(
-    "HET_LACAM", r"E:\gb\het_lacam\build\Release\main.exe")
+    "HET_LACAM", r"E:\gb\het_rt_lacam\build\Release\main.exe")
 
 TIMEOUT_SEC = 30
 

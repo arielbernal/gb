@@ -25,11 +25,6 @@ struct HetPIBT {
   std::vector<int> base_occupied_now;
   std::vector<int> base_occupied_next;
 
-  // Per-agent fleet-vertex occupancy (for fast same-fleet checks)
-  // fleet_occupied_now[fleet_id][fleet_vertex_id] -> agent_id or NO_AGENT
-  std::vector<std::vector<int>> fleet_occupied_now;
-  std::vector<std::vector<int>> fleet_occupied_next;
-
   // Candidates buffer
   std::vector<std::vector<Vertex *>> C_next;
   std::vector<float> tie_breakers;  // per fleet vertex (max across fleets)

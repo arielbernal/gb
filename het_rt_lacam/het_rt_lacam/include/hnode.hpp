@@ -35,6 +35,3 @@ struct HNode {
   // Speed-gated: agents with kappa>0 get only the stay option
   LNode *get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins);
 };
-using HNodes = std::vector<HNode *>;
-
-std::ostream &operator<<(std::ostream &os, const HNode *H);

@@ -188,9 +188,3 @@ void Graph::build_from_base(const Graph& base, int cell_size)
 }
 
 int Graph::size() const { return V.size(); }
-
-std::ostream& operator<<(std::ostream& os, const Vertex* v)
-{
-  os << v->index;
-  return os;
-}
