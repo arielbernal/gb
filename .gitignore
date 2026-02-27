@@ -36,3 +36,4 @@ NUL
 
 # Agents workspace temp files
 agents/*/temp/
+agents/
