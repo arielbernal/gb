@@ -1,12 +1,14 @@
 #include "../include/pibt.hpp"
 #include <cassert>
 
-HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed)
+HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed,
+                 bool _goal_lock)
     : ins(_ins),
       MT(std::mt19937(seed)),
       N(ins->N),
       D(_D),
       NO_AGENT(N),
+      goal_lock(_goal_lock),
       base_size(ins->base_width * ins->base_height),
       base_occupied_now(base_size, NO_AGENT),
       base_occupied_next(base_size, NO_AGENT),
@@ -176,6 +178,25 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
     }
   }
 
+  // 2.25. Pre-reserve goal-locked agents: agents at goal with kappa=0
+  //       are permanently locked — they stay in place and cannot be pushed.
+  if (success && goal_lock) {
+    for (int i = 0; i < N; ++i) {
+      if (Q_to.positions[i] != nullptr) continue;  // already constrained
+      if (Q_from.positions[i] != ins->goals[i]) continue;
+      if (Q_from.kappa[i] != 0) continue;
+      auto *stay = Q_from.positions[i];
+      if (!base_next_free(i, stay)) {
+        success = false;
+        fail_stage = 2;
+        break;
+      }
+      Q_to.positions[i] = stay;
+      Q_to.kappa[i] = 0;
+      mark_base_next(i, stay);
+    }
+  }
+
   // 2.5. Pre-reserve speed-gated agents (kappa > 0) not already constrained.
   //      These agents MUST stay in place — reserve them now so free-moving
   //      agents won't collide with them.
@@ -272,6 +293,12 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
 {
   if (max_depth <= 0) return false;
   if (in_chain.count(i)) return false;
+
+  // Goal-locked agents cannot be pushed — they are permanent obstacles.
+  if (goal_lock && Q_from.positions[i] == ins->goals[i] &&
+      Q_from.kappa[i] == 0) {
+    return false;
+  }
 
   int sp = ins->speed_period(i);
   int fid_i = ins->agents[i].fleet_id;

@@ -25,6 +25,7 @@ struct HNode {
 
   // for low-level search
   std::vector<float> priorities;
+  std::vector<int> stuck_count;  // stuck-counter acceleration (hetpibt extension)
   std::vector<int> order;
   std::queue<LNode *> search_tree;
 
@@ -33,5 +34,7 @@ struct HNode {
   ~HNode();
 
   // Speed-gated: agents with kappa>0 get only the stay option
-  LNode *get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins);
+  // Goal-locked: agents at goal with kappa=0 get only the stay option
+  LNode *get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins,
+                                bool goal_lock = false);
 };

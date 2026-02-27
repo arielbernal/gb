@@ -4,6 +4,7 @@
 #include <iostream>
 
 bool Planner::FLG_STAR = false;  // Phase 1: no anytime by default
+bool Planner::FLG_GOAL_LOCK = false;
 int Planner::PIBT_NUM = 1;      // Phase 1: single PIBT
 bool Planner::FLG_MULTI_THREAD = false;
 float Planner::RANDOM_INSERT_PROB1 = 0.0;
@@ -34,7 +35,7 @@ Planner::Planner(const Instance *_ins, int _verbose, const Deadline *_deadline,
 {
   // Create PIBT instances
   for (int k = 0; k < PIBT_NUM; ++k) {
-    pibts.push_back(new HetPIBT(ins, D, k + seed));
+    pibts.push_back(new HetPIBT(ins, D, k + seed, FLG_GOAL_LOCK));
   }
 }
 
@@ -85,7 +86,7 @@ Solution Planner::solve()
     }
 
     // low-level search
-    auto L = H->get_next_lowlevel_node(MT, ins);
+    auto L = H->get_next_lowlevel_node(MT, ins, FLG_GOAL_LOCK);
     if (L == nullptr) {
       OPEN.pop_front();
       continue;

@@ -34,6 +34,10 @@ int main(int argc, char *argv[])
       .implicit_value(true);
 
   // solver parameters
+  program.add_argument("--goal-lock")
+      .help("permanently lock agents at their goals")
+      .default_value(false)
+      .implicit_value(true);
   program.add_argument("--no-star")
       .help("turn off anytime improvement")
       .default_value(false)
@@ -94,6 +98,7 @@ int main(int argc, char *argv[])
   }
 
   // solver parameters
+  Planner::FLG_GOAL_LOCK = program.get<bool>("goal-lock");
   Planner::FLG_STAR = !program.get<bool>("no-star");
   Planner::PIBT_NUM = std::stoi(program.get<std::string>("pibt-num"));
   Planner::FLG_MULTI_THREAD = program.get<bool>("multi-thread");

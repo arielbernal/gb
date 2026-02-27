@@ -42,6 +42,7 @@ struct Planner {
 
   // parameters
   static bool FLG_STAR;
+  static bool FLG_GOAL_LOCK;
   static int PIBT_NUM;
   static bool FLG_MULTI_THREAD;
   static float RANDOM_INSERT_PROB1;

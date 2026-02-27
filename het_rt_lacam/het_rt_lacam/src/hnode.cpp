@@ -13,6 +13,7 @@ HNode::HNode(HetConfig _C, const DistTable *D, const Instance *ins,
       h(_h),
       f(g + h),
       priorities(C.size(), 0),
+      stuck_count(C.size(), 0),
       order(C.size(), 0),
       search_tree(std::queue<LNode *>())
 {
@@ -36,12 +37,24 @@ HNode::HNode(HetConfig _C, const DistTable *D, const Instance *ins,
       priorities[i] = (float)(d * sp + C.kappa[i]) / 10000.0f;
     }
   } else {
-    // dynamic priorities, akin to PIBT
+    // dynamic priorities with stuck-counter acceleration (matches hetpibt).
+    // Agents that made progress: stuck_count resets, priority += 1 (linear).
+    // Agents that didn't reduce distance: stuck_count++, priority += 1 + sc
+    //   (quadratic growth — stuck agents rapidly outprioritize progressing ones).
     for (size_t i = 0; i < N; ++i) {
-      if (D->get((int)i, C.positions[i]) != 0 || C.kappa[i] != 0) {
-        priorities[i] = parent->priorities[i] + 1;
-      } else {
+      if (D->get((int)i, C.positions[i]) == 0 && C.kappa[i] == 0) {
+        // at goal: reset
         priorities[i] = parent->priorities[i] - (int)parent->priorities[i];
+        stuck_count[i] = 0;
+      } else {
+        int d_now = D->get((int)i, C.positions[i]);
+        int d_par = D->get((int)i, parent->C.positions[i]);
+        if (d_now < d_par) {
+          stuck_count[i] = 0;  // made progress
+        } else {
+          stuck_count[i] = parent->stuck_count[i] + 1;
+        }
+        priorities[i] = parent->priorities[i] + 1 + stuck_count[i];
       }
     }
   }
@@ -60,7 +73,8 @@ HNode::~HNode()
   }
 }
 
-LNode *HNode::get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins)
+LNode *HNode::get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins,
+                                     bool goal_lock)
 {
   if (search_tree.empty()) return nullptr;
 
@@ -88,13 +102,15 @@ LNode *HNode::get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins)
       for (int bc : cells) occupied.insert(bc);
     }
 
-    // Speed-gated unconstrained agents are guaranteed to stay at their
-    // current position. Include their footprints so no agent is
-    // constrained to a cell that will inevitably collide (s25 failures).
+    // Speed-gated and goal-locked unconstrained agents are guaranteed to
+    // stay at their current position. Include their footprints so no agent
+    // is constrained to a cell that will inevitably collide.
     for (uint a = 0; a < ins->N; ++a) {
       if ((int)a == i) continue;
       if (constrained_set.count(a)) continue;
-      if (C.kappa[a] == 0) continue;
+      bool is_locked = (goal_lock && C.positions[a] == ins->goals[a] &&
+                        C.kappa[a] == 0);
+      if (C.kappa[a] == 0 && !is_locked) continue;
       int fid_a = ins->agents[a].fleet_id;
       int cs_a = ins->fleet_cell_sizes[fid_a];
       auto cells = to_base_cells(C.positions[a]->index,
@@ -107,8 +123,11 @@ LNode *HNode::get_next_lowlevel_node(std::mt19937 &MT, const Instance *ins)
     int cs_i = ins->fleet_cell_sizes[fid_i];
     int fw_i = ins->fleet_graphs[fid_i].width;
 
-    if (C.kappa[i] != 0) {
-      // Speed gating: must stay. Only push if stay doesn't collide.
+    bool agent_i_goal_locked = (goal_lock && C.positions[i] == ins->goals[i] &&
+                                C.kappa[i] == 0);
+
+    if (C.kappa[i] != 0 || agent_i_goal_locked) {
+      // Speed gating or goal locking: must stay. Only push if stay doesn't collide.
       auto *stay = C.positions[i];
       auto stay_cells = to_base_cells(stay->index, fw_i, cs_i,
                                       ins->base_width);

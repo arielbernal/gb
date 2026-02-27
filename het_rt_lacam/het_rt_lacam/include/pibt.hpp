@@ -19,6 +19,7 @@ struct HetPIBT {
   const int N;
   const DistTable *D;
   const int NO_AGENT;
+  bool goal_lock;
 
   // Base-grid occupancy: base_cell_index -> agent_id or NO_AGENT
   int base_size;  // base_width * base_height
@@ -30,7 +31,8 @@ struct HetPIBT {
   std::vector<float> tie_breakers;  // per fleet vertex (max across fleets)
   int max_fleet_vertices;
 
-  HetPIBT(const Instance *_ins, const DistTable *_D, int seed = 0);
+  HetPIBT(const Instance *_ins, const DistTable *_D, int seed = 0,
+          bool _goal_lock = false);
   ~HetPIBT();
 
   // Main entry: generate a new HetConfig from Q_from, filling Q_to.
