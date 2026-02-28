@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "lacam.hpp"
+#include "planner.hpp"
 
 // ---------------------------------------------------------------------------
 // 3-agent heterogeneous (1×cs=1 + 2×cs=2): solve and validate.
@@ -93,4 +94,76 @@ TEST(PlannerTest, Solve_Homogeneous10)
   ASSERT_FALSE(solution.empty()) << "solver returned empty solution";
   ASSERT_TRUE(is_feasible_solution(ins, solution))
       << "solution has collision violations";
+}
+
+// ---------------------------------------------------------------------------
+// RT-LaCAM: solve_one_step() loop on 3-agent het instance.
+// Verifies goal is reached, each step is a valid single move, no collisions.
+// ---------------------------------------------------------------------------
+TEST(PlannerTest, RT_SolvesHet3Agent)
+{
+  Instance ins("../assets/test_het_3agent.scen", "../assets/empty-8-8.map");
+  ASSERT_TRUE(ins.is_valid());
+
+  auto deadline = Deadline(10000);
+  Planner::FLG_STAR = false;
+  Planner::FLG_GOAL_LOCK = false;
+
+  auto planner = Planner(&ins, 0, &deadline, 0);
+
+  std::vector<HetConfig> executed;
+  executed.push_back(ins.make_start_config());
+
+  bool goal_reached = false;
+  const int max_steps = 5000;
+
+  while (!is_expired(&deadline) && (int)executed.size() <= max_steps) {
+    auto next = planner.solve_one_step(50);
+    executed.push_back(next);
+    if (ins.is_goal(next)) {
+      goal_reached = true;
+      break;
+    }
+  }
+
+  ASSERT_TRUE(goal_reached) << "RT mode did not reach goal within "
+                             << max_steps << " steps";
+
+  // Convert to Solution and validate
+  Solution solution;
+  for (auto &hc : executed) solution.push_back(hc.positions);
+
+  ASSERT_TRUE(is_feasible_solution(ins, solution))
+      << "RT solution has collision violations";
+
+  // Verify start and goal
+  ASSERT_EQ(solution.front(), ins.starts);
+  ASSERT_EQ(solution.back(), ins.goals);
+}
+
+// ---------------------------------------------------------------------------
+// RT-LaCAM: budget independence — budgets 1, 50, 500 all solve the instance.
+// ---------------------------------------------------------------------------
+TEST(PlannerTest, RT_BudgetIndependence)
+{
+  for (int budget : {1, 50, 500}) {
+    Instance ins("../assets/test_het_valid.scen", "../assets/empty-8-8.map");
+    ASSERT_TRUE(ins.is_valid());
+
+    auto deadline = Deadline(10000);
+    Planner::FLG_STAR = false;
+    Planner::FLG_GOAL_LOCK = false;
+
+    auto planner = Planner(&ins, 0, &deadline, 0);
+
+    bool goal_reached = false;
+    for (int step = 0; step < 5000 && !is_expired(&deadline); ++step) {
+      auto next = planner.solve_one_step(budget);
+      if (ins.is_goal(next)) {
+        goal_reached = true;
+        break;
+      }
+    }
+    ASSERT_TRUE(goal_reached) << "RT budget=" << budget << " failed to solve";
+  }
 }

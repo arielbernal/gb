@@ -40,6 +40,14 @@ struct Planner {
   HNode *H_init;
   HNode *H_goal;
 
+  // RT-LaCAM incremental state
+  HNode *current_root_;       // config agents are currently at (for RT mode)
+  bool search_initialized_;   // whether H_init has been created
+  HNode *latest_generated_;   // most recently generated node (for extract_next_step)
+
+  // RT search status
+  enum class SearchStatus { SEARCHING, GOAL_FOUND, NO_SOLUTION };
+
   // parameters
   static bool FLG_STAR;
   static bool FLG_GOAL_LOCK;
@@ -60,7 +68,16 @@ struct Planner {
           const Deadline *_deadline = nullptr, int _seed = 0);
   ~Planner();
 
+  // Standard (full-horizon) solve
   Solution solve();
+
+  // RT-LaCAM incremental methods
+  SearchStatus search(int node_budget);
+  HetConfig extract_next_step() const;
+  void advance(const HetConfig &next);
+  HetConfig solve_one_step(int node_budget);
+  void reset();
+
   bool set_new_config(HNode *S, LNode *M, HetConfig &Q_to);
   HNode *create_highlevel_node(const HetConfig &Q, HNode *parent);
   void rewrite(HNode *H_from, HNode *H_to);

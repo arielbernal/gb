@@ -58,6 +58,13 @@ int main(int argc, char *argv[])
   program.add_argument("--checkpoints-duration")
       .help("for recording (seconds)")
       .default_value(std::string("5"));
+  program.add_argument("--rt")
+      .help("enable real-time incremental execution (RT-LaCAM)")
+      .default_value(false)
+      .implicit_value(true);
+  program.add_argument("--rt-budget")
+      .help("node expansion budget per RT step")
+      .default_value(std::string("100"));
   try {
     program.parse_known_args(argc, argv);
   } catch (const std::runtime_error &err) {
@@ -110,21 +117,73 @@ int main(int argc, char *argv[])
   Planner::CHECKPOINTS_DURATION =
       std::stof(program.get<std::string>("checkpoints-duration")) * 1000;
 
-  // solve
+  const auto rt_mode = program.get<bool>("rt");
+  const auto rt_budget = std::stoi(program.get<std::string>("rt-budget"));
+
   const auto deadline = Deadline(time_limit_sec * 1000);
-  const auto solution = solve(ins, verbose - 1, &deadline, seed);
-  const auto comp_time_ms = deadline.elapsed_ms();
 
-  if (solution.empty()) info(1, verbose, &deadline, "failed to solve");
+  if (rt_mode) {
+    // RT-LaCAM: incremental execution — search for rt_budget nodes, execute
+    // one step, repeat. OPEN and EXPLORED persist across steps.
+    info(1, verbose, "RT-LaCAM mode, budget=", rt_budget, " per step");
+    auto planner = Planner(&ins, verbose - 1, &deadline, seed);
 
-  // check feasibility
-  if (!is_feasible_solution(ins, solution, verbose)) {
-    info(0, verbose, &deadline, "invalid solution");
-    return 1;
+    std::vector<HetConfig> executed;
+    executed.push_back(ins.make_start_config());
+
+    bool goal_reached = false;
+    const int max_steps = 100000;  // guard against infinite loops
+
+    while (!is_expired(&deadline) && (int)executed.size() <= max_steps) {
+      auto next = planner.solve_one_step(rt_budget);
+      executed.push_back(next);
+      if (ins.is_goal(next)) {
+        goal_reached = true;
+        break;
+      }
+    }
+
+    const auto comp_time_ms = deadline.elapsed_ms();
+    const int steps_executed = (int)executed.size() - 1;
+
+    if (goal_reached) {
+      info(1, verbose, &deadline, "RT: goal reached in ", steps_executed,
+           " steps");
+    } else {
+      info(1, verbose, &deadline, "RT: timeout after ", steps_executed,
+           " steps");
+    }
+
+    // Convert executed HetConfig path to Solution (vector<Config>)
+    Solution solution;
+    for (auto &hc : executed) solution.push_back(hc.positions);
+
+    // Validate only if complete
+    if (goal_reached && !is_feasible_solution(ins, solution, verbose)) {
+      info(0, verbose, &deadline, "RT: invalid solution");
+      return 1;
+    }
+
+    print_stats(verbose, &deadline, ins, solution, comp_time_ms);
+    make_log(ins, solution, output_name, comp_time_ms, map_name, seed,
+             log_short);
+  } else {
+    // Standard (full-horizon) solve
+    const auto solution = solve(ins, verbose - 1, &deadline, seed);
+    const auto comp_time_ms = deadline.elapsed_ms();
+
+    if (solution.empty()) info(1, verbose, &deadline, "failed to solve");
+
+    // check feasibility
+    if (!is_feasible_solution(ins, solution, verbose)) {
+      info(0, verbose, &deadline, "invalid solution");
+      return 1;
+    }
+
+    // post processing
+    print_stats(verbose, &deadline, ins, solution, comp_time_ms);
+    make_log(ins, solution, output_name, comp_time_ms, map_name, seed,
+             log_short);
   }
-
-  // post processing
-  print_stats(verbose, &deadline, ins, solution, comp_time_ms);
-  make_log(ins, solution, output_name, comp_time_ms, map_name, seed, log_short);
   return 0;
 }

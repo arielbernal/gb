@@ -28,6 +28,9 @@ Planner::Planner(const Instance *_ins, int _verbose, const Deadline *_deadline,
       EXPLORED(),
       H_init(nullptr),
       H_goal(nullptr),
+      current_root_(nullptr),
+      search_initialized_(false),
+      latest_generated_(nullptr),
       search_iter(0),
       time_initial_solution(-1),
       cost_initial_solution(-1),
@@ -41,6 +44,7 @@ Planner::Planner(const Instance *_ins, int _verbose, const Deadline *_deadline,
 
 Planner::~Planner()
 {
+  for (auto &p : EXPLORED) delete p.second;
   delete heuristic;
   for (auto &p : pibts) delete p;
   delete D;
@@ -121,7 +125,8 @@ Solution Planner::solve()
   update_checkpoints();
   logging();
   auto solution = backtrack(H_goal);
-  for (auto p : EXPLORED) delete p.second;
+  for (auto &p : EXPLORED) delete p.second;
+  EXPLORED.clear();  // prevent double-free in destructor
   return solution;
 }
 
@@ -261,4 +266,175 @@ void Planner::logging()
   }
   info(1, verbose, deadline, "search iteration:", search_iter,
        "\texplored:", EXPLORED.size());
+}
+
+// ---------------------------------------------------------------------------
+// RT-LaCAM incremental methods
+// ---------------------------------------------------------------------------
+
+void Planner::reset()
+{
+  for (auto &p : EXPLORED) delete p.second;
+  EXPLORED.clear();
+  OPEN.clear();
+  H_init = nullptr;
+  H_goal = nullptr;
+  current_root_ = nullptr;
+  latest_generated_ = nullptr;
+  search_initialized_ = false;
+  search_iter = 0;
+  time_initial_solution = -1;
+  cost_initial_solution = -1;
+  checkpoints.clear();
+}
+
+Planner::SearchStatus Planner::search(int node_budget)
+{
+  // Initialize on first call
+  if (!search_initialized_) {
+    auto start_config = ins->make_start_config();
+    H_init = create_highlevel_node(start_config, nullptr);
+    OPEN.push_front(H_init);
+    current_root_ = H_init;
+    latest_generated_ = H_init;
+    search_initialized_ = true;
+  }
+
+  int iterations = 0;
+  while (!OPEN.empty() && !is_expired(deadline) && iterations < node_budget) {
+    search_iter += 1;
+    iterations += 1;
+    update_checkpoints();
+
+    auto H = OPEN.front();
+
+    // random diversification after initial solution
+    if (H_goal != nullptr && RANDOM_INSERT_PROB2 > 0 &&
+        get_random_float(MT) < RANDOM_INSERT_PROB2) {
+      H = OPEN[get_random_int(MT, 0, (int)OPEN.size() - 1)];
+    }
+
+    // pruning: skip if f >= best known goal f
+    if (H_goal != nullptr && H->f >= H_goal->f) {
+      OPEN.pop_front();
+      continue;
+    }
+
+    // goal check
+    if (H_goal == nullptr && ins->is_goal(H->C)) {
+      time_initial_solution = (int)elapsed_ms(deadline);
+      cost_initial_solution = H->g;
+      H_goal = H;
+      latest_generated_ = H;
+      info(1, verbose, deadline, "RT: found solution, cost: ", H_goal->g);
+      if (!FLG_STAR) return SearchStatus::GOAL_FOUND;
+      continue;
+    }
+
+    // low-level search
+    auto L = H->get_next_lowlevel_node(MT, ins, FLG_GOAL_LOCK);
+    if (L == nullptr) {
+      OPEN.pop_front();
+      continue;
+    }
+
+    // generate successor configuration
+    HetConfig Q_to;
+    Q_to.positions.assign(N, nullptr);
+    Q_to.kappa.assign(N, 0);
+
+    auto res = set_new_config(H, L, Q_to);
+    delete L;
+    if (!res) continue;
+
+    // check explored list
+    auto iter = EXPLORED.find(Q_to);
+    if (iter != EXPLORED.end()) {
+      rewrite(H, iter->second);
+      latest_generated_ = iter->second;
+      if (RANDOM_INSERT_PROB1 > 0 &&
+          get_random_float(MT) < RANDOM_INSERT_PROB1) {
+        OPEN.push_front(H_init);
+      } else {
+        OPEN.push_front(iter->second);
+      }
+    } else {
+      auto H_new = create_highlevel_node(Q_to, H);
+      latest_generated_ = H_new;
+      OPEN.push_front(H_new);
+    }
+  }
+
+  if (H_goal != nullptr) return SearchStatus::GOAL_FOUND;
+  if (OPEN.empty()) return SearchStatus::NO_SOLUTION;
+  return SearchStatus::SEARCHING;
+}
+
+HetConfig Planner::extract_next_step() const
+{
+  HNode *target = (H_goal != nullptr) ? H_goal : latest_generated_;
+
+  if (target == nullptr || target == current_root_) {
+    return current_root_->C;
+  }
+
+  // Strategy 1: parent-chain walk from target back to current_root_.
+  // Works when the chain is intact (no rewrite() interference).
+  {
+    HNode *step = target;
+    while (step->parent != nullptr && step->parent != current_root_) {
+      step = step->parent;
+    }
+    if (step->parent == current_root_) {
+      return step->C;
+    }
+  }
+
+  // Strategy 2: rewrite() may have re-parented nodes, breaking the chain.
+  // BFS through the neighbor graph from current_root_ to target.
+  // The neighbor graph is always connected (bidirectional edges from
+  // constructor), so this is guaranteed to find a path if one exists.
+  {
+    std::unordered_map<HNode *, HNode *> came_from;
+    std::queue<HNode *> bfs;
+    bfs.push(current_root_);
+    came_from[current_root_] = nullptr;
+
+    while (!bfs.empty()) {
+      auto node = bfs.front();
+      bfs.pop();
+      if (node == target) {
+        // Backtrack to find first step after current_root_
+        HNode *step = node;
+        while (came_from[step] != current_root_) step = came_from[step];
+        return step->C;
+      }
+      for (HNode *nb : node->neighbor) {
+        if (came_from.find(nb) == came_from.end()) {
+          came_from[nb] = node;
+          bfs.push(nb);
+        }
+      }
+    }
+  }
+
+  // Stay in place — no forward step found yet
+  return current_root_->C;
+}
+
+void Planner::advance(const HetConfig &next)
+{
+  auto iter = EXPLORED.find(next);
+  if (iter != EXPLORED.end()) {
+    current_root_ = iter->second;
+  }
+  // If next == current_root_->C (stay in place), current_root_ unchanged
+}
+
+HetConfig Planner::solve_one_step(int node_budget)
+{
+  search(node_budget);
+  auto next = extract_next_step();
+  advance(next);
+  return next;
 }

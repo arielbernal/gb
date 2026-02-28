@@ -37,3 +37,6 @@ NUL
 # Agents workspace temp files
 agents/*/temp/
 agents/
+
+# Project context (auto-loads for agents, not repo content)
+CLAUDE.md
