@@ -38,6 +38,7 @@ struct Instance {
 
   const Graph *fleet_graph(int agent_id) const;
   int speed_period(int agent_id) const;
+  int skip_invalid_agents(const int verbose = 0);
   bool is_valid(const int verbose = 0) const;
 
   // Build initial HetConfig from starts (all kappa=0)

@@ -12,16 +12,18 @@ HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed,
       base_size(ins->base_width * ins->base_height),
       base_occupied_now(base_size, NO_AGENT),
       base_occupied_next(base_size, NO_AGENT),
-      max_fleet_vertices(0)
+      max_fleet_vertices(0),
+      recent_cells(ins->N),
+      bfs_default_depth(2)
 {
   for (int f = 0; f < ins->num_fleets; ++f) {
     int sz = ins->fleet_graphs[f].size();
     if (sz > max_fleet_vertices) max_fleet_vertices = sz;
   }
 
-  // Candidates buffer: max 4 neighbors + stay = 5
+  // Candidates buffer: BFS may produce more candidates than 1-step
   C_next.resize(N);
-  for (int i = 0; i < N; ++i) C_next[i].reserve(5);
+  for (int i = 0; i < N; ++i) C_next[i].reserve(10);
 
   tie_breakers.assign(max_fleet_vertices, 0);
 }
@@ -245,6 +247,17 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
     }
   }
 
+  // 3.5. Update oscillation history (only on successful configs)
+  if (success) {
+    for (int i = 0; i < N; ++i) {
+      if (Q_to.positions[i] != nullptr) {
+        recent_cells[i].push_back(Q_to.positions[i]->index);
+        if (static_cast<int>(recent_cells[i].size()) > 10)
+          recent_cells[i].pop_front();
+      }
+    }
+  }
+
   // 4. Cleanup occupancy
   for (int i = 0; i < N; ++i) {
     clear_base_now(i, Q_from.positions[i]);
@@ -267,6 +280,147 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
   }
 
   return success;
+}
+
+// ---------------------------------------------------------------------------
+// BFS multi-step lookahead for candidate generation.
+// Explores agent's fleet graph up to `depth` steps, computing
+// cost = steps + h(endpoint) + congestion + oscillation_penalty.
+// Groups results by first-step vertex and populates C_next[agent_id].
+// ---------------------------------------------------------------------------
+void HetPIBT::bfs_get_candidates(int agent_id, const HetConfig &Q_from,
+                                  int depth)
+{
+  C_next[agent_id].clear();
+
+  auto *v_now = Q_from.positions[agent_id];
+  int fid = ins->agents[agent_id].fleet_id;
+  int cs = ins->fleet_cell_sizes[fid];
+  auto &fg = ins->fleet_graphs[fid];
+
+  // BFS state: (cost, depth, cell_index)
+  using Node = std::tuple<int, int, int>;
+  std::priority_queue<Node, std::vector<Node>, std::greater<Node>> pq;
+  std::unordered_map<int, int> best_cost;    // cell -> best cost seen
+  std::unordered_map<int, int> parent;       // cell -> parent cell
+
+  int h_start = D->get(agent_id, v_now);
+  pq.push({h_start, 0, v_now->index});
+  best_cost[v_now->index] = h_start;
+
+  while (!pq.empty()) {
+    auto [cost, d, cell] = pq.top();
+    pq.pop();
+
+    if (d >= depth) continue;
+    // Skip if we've found a better path to this cell already
+    if (cost > best_cost[cell]) continue;
+
+    auto *v = fg.U[cell];
+    if (!v) continue;
+
+    // Expand neighbors + stay-in-place
+    std::vector<int> next_cells;
+    for (auto *u : v->neighbor) next_cells.push_back(u->index);
+    // Shuffle neighbors for diversity (matches hetpibt)
+    if (next_cells.size() > 1) {
+      std::shuffle(next_cells.begin(), next_cells.end(), MT);
+    }
+    next_cells.push_back(cell);  // stay option last
+
+    for (int nc : next_cells) {
+      auto *nv = fg.U[nc];
+      if (!nv) continue;
+
+      int h = D->get(agent_id, nv);
+      if (h >= static_cast<int>(fg.V.size())) continue;  // unreachable
+
+      // Congestion: count other agents at this cell's base footprint
+      auto nc_base = to_base_cells(nc, fg.width, cs, ins->base_width);
+      int nb = 0;
+      bool goal_blocked = false;
+      for (int bc : nc_base) {
+        int occ = base_occupied_now[bc];
+        if (occ != NO_AGENT && occ != agent_id) {
+          // Check if goal-locked agent — treat as hard obstacle
+          if (goal_lock && Q_from.positions[occ] == ins->goals[occ] &&
+              Q_from.kappa[occ] == 0) {
+            goal_blocked = true;
+            break;
+          }
+          ++nb;
+        }
+      }
+      if (goal_blocked) continue;
+      int congestion = std::min(nb, 3);
+
+      // Oscillation penalty: penalize revisiting recent cells (low-congestion only)
+      int osc_penalty = 0;
+      if (nb <= 2) {
+        for (int rc : recent_cells[agent_id]) {
+          if (rc == nc) osc_penalty += 2;
+        }
+      }
+
+      int new_cost = (d + 1) + h + congestion + osc_penalty;
+
+      auto it = best_cost.find(nc);
+      if (it == best_cost.end() || new_cost < it->second) {
+        best_cost[nc] = new_cost;
+        parent[nc] = cell;
+        pq.push({new_cost, d + 1, nc});
+      }
+    }
+  }
+
+  // Trace back to first-step vertices.
+  // For each visited cell, find which neighbor of v_now it was reached through.
+  // Group by first-step, keep the minimum endpoint cost per group.
+  std::unordered_map<int, int> first_step_cost;  // first_step cell -> best cost
+
+  for (auto &[cell, cost] : best_cost) {
+    if (cell == v_now->index) continue;  // skip start
+
+    // Trace parent chain to find first step
+    int cur = cell;
+    while (true) {
+      auto pit = parent.find(cur);
+      if (pit == parent.end()) break;  // shouldn't happen
+      if (pit->second == v_now->index) break;  // cur is the first step
+      cur = pit->second;
+    }
+
+    auto it = first_step_cost.find(cur);
+    if (it == first_step_cost.end() || cost < it->second) {
+      first_step_cost[cur] = cost;
+    }
+  }
+
+  // Also add stay option with its direct cost
+  first_step_cost[v_now->index] = h_start;
+
+  // Build sorted candidate list
+  struct CandInfo {
+    Vertex *v;
+    int cost;
+  };
+  std::vector<CandInfo> cands;
+  for (auto &[cell, cost] : first_step_cost) {
+    auto *v = fg.U[cell];
+    if (v) cands.push_back({v, cost});
+  }
+
+  // Sort by cost (ascending)
+  std::sort(cands.begin(), cands.end(),
+            [](const CandInfo &a, const CandInfo &b) {
+              return a.cost < b.cost;
+            });
+
+  // Populate C_next with sorted candidates and assign tie-breakers
+  for (auto &ci : cands) {
+    C_next[agent_id].push_back(ci.v);
+    tie_breakers[ci.v->id] = ci.cost + get_random_float(MT);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -320,21 +474,15 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
 
   in_chain.insert(i);
 
-  // kappa == 0: agent CAN move. Build candidates.
+  // kappa == 0: agent CAN move. Build candidates via BFS lookahead.
   auto *v_now = Q_from.positions[i];
-  C_next[i].clear();
-  for (auto *u : v_now->neighbor) {
-    C_next[i].push_back(u);
-    tie_breakers[u->id] = get_random_float(MT);
-  }
-  C_next[i].push_back(v_now);  // stay option
-  tie_breakers[v_now->id] = get_random_float(MT);
+  int bfs_depth = std::max(bfs_default_depth, cs_i);
+  bfs_get_candidates(i, Q_from, bfs_depth);
 
-  // Sort by distance-to-goal + tie-breaker
+  // Sort by BFS cost + tie-breaker
   std::sort(C_next[i].begin(), C_next[i].end(),
             [&](Vertex *const a, Vertex *const b) {
-              return D->get(i, a) + tie_breakers[a->id] <
-                     D->get(i, b) + tie_breakers[b->id];
+              return tie_breakers[a->id] < tie_breakers[b->id];
             });
 
   for (auto *u : C_next[i]) {

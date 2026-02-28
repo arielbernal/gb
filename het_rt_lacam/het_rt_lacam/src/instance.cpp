@@ -176,6 +176,26 @@ int Instance::speed_period(int agent_id) const
   return fleet_speed_periods[agents[agent_id].fleet_id];
 }
 
+int Instance::skip_invalid_agents(const int verbose)
+{
+  int removed = 0;
+  for (int i = static_cast<int>(N) - 1; i >= 0; --i) {
+    if (starts[i] == nullptr || goals[i] == nullptr) {
+      info(1, verbose, "warning: skipping agent ", i,
+           (starts[i] == nullptr ? " (null start)" : " (null goal)"));
+      agents.erase(agents.begin() + i);
+      starts.erase(starts.begin() + i);
+      goals.erase(goals.begin() + i);
+      ++removed;
+    }
+  }
+  if (removed > 0) {
+    N = static_cast<uint>(agents.size());
+    // Re-number agent fleet_ids are fine — just N changed
+  }
+  return removed;
+}
+
 bool Instance::is_valid(const int verbose) const
 {
   if (N != starts.size() || N != goals.size()) {

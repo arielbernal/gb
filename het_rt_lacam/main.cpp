@@ -87,6 +87,7 @@ int main(int argc, char *argv[])
     ins_ptr = std::make_unique<Instance>(scen_name, map_name, swap_xy);
   }
   auto &ins = *ins_ptr;
+  ins.skip_invalid_agents(verbose);
   if (!ins.is_valid(verbose)) return 1;
 
   info(1, verbose, "agents: ", ins.N, ", fleets: ", ins.num_fleets,

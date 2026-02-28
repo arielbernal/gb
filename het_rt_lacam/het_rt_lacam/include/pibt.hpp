@@ -7,6 +7,8 @@
  * - Works with HetConfig (positions + kappa)
  */
 #pragma once
+#include <deque>
+#include <queue>
 #include "dist_table.hpp"
 #include "graph.hpp"
 #include "instance.hpp"
@@ -31,6 +33,10 @@ struct HetPIBT {
   std::vector<float> tie_breakers;  // per fleet vertex (max across fleets)
   int max_fleet_vertices;
 
+  // BFS lookahead
+  std::vector<std::deque<int>> recent_cells;  // oscillation history per agent
+  int bfs_default_depth;                       // default BFS depth (2)
+
   HetPIBT(const Instance *_ins, const DistTable *_D, int seed = 0,
           bool _goal_lock = false);
   ~HetPIBT();
@@ -49,6 +55,9 @@ struct HetPIBT {
                 std::unordered_set<int> &keep_out,
                 std::unordered_set<int> &in_chain,
                 int max_depth);
+
+  // BFS candidate generation (replaces 1-step neighbor enumeration)
+  void bfs_get_candidates(int agent_id, const HetConfig &Q_from, int depth);
 
   // Footprint helpers
   void mark_base_now(int agent_id, Vertex *v);
