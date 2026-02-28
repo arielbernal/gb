@@ -53,6 +53,7 @@ struct Planner {
   static bool FLG_GOAL_LOCK;
   static int PIBT_NUM;
   static bool FLG_MULTI_THREAD;
+  static bool FLG_ST_BFS;  // true = space-time BFS, false = spatial-only
   static float RANDOM_INSERT_PROB1;
   static float RANDOM_INSERT_PROB2;
 

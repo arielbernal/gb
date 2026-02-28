@@ -1,0 +1,11 @@
+solver,category,agent_label,scen_id,agents,solved,goals_reached,goals_total,soc,soc_lb,makespan,makespan_lb,runtime_ms,rt_steps
+het_rt_lacam_rt_stbfs,het_bench,var,0,9,True,9,9,679,389,207,186,4132,207
+het_rt_lacam_rt_stbfs,het_bench,var,1,-1,False,0,0,0,0,0,0,72,0
+het_rt_lacam_rt_stbfs,het_bench,var,2,7,True,7,7,457,100,139,48,1833,139
+het_rt_lacam_rt_stbfs,het_bench,var,3,7,True,7,7,308,143,78,68,902,78
+het_rt_lacam_rt_stbfs,het_bench,var,4,8,True,8,8,380,169,144,60,2174,144
+het_rt_lacam_rt_stbfs,het_bench,var,5,6,True,6,6,383,338,175,175,602,175
+het_rt_lacam_rt_stbfs,het_bench,var,6,9,True,9,9,601,434,173,173,2346,173
+het_rt_lacam_rt_stbfs,het_bench,var,7,9,True,9,9,303,163,77,67,985,77
+het_rt_lacam_rt_stbfs,het_bench,var,8,9,True,9,9,564,288,147,147,2089,147
+het_rt_lacam_rt_stbfs,het_bench,var,9,8,True,8,8,401,271,143,143,1910,143

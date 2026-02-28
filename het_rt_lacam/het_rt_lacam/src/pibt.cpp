@@ -1,14 +1,16 @@
 #include "../include/pibt.hpp"
 #include <cassert>
+#include <memory>
 
 HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed,
-                 bool _goal_lock)
+                 bool _goal_lock, bool _use_st_bfs)
     : ins(_ins),
       MT(std::mt19937(seed)),
       N(ins->N),
       D(_D),
       NO_AGENT(N),
       goal_lock(_goal_lock),
+      use_st_bfs(_use_st_bfs),
       base_size(ins->base_width * ins->base_height),
       base_occupied_now(base_size, NO_AGENT),
       base_occupied_next(base_size, NO_AGENT),
@@ -149,9 +151,15 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
   // 0. Create ephemeral space-time reservation table for this config call.
   //    Seeded with Q_from positions at t=0. Used by st_bfs_get_candidates()
   //    inside funcPIBT. Accumulates reservations as agents are assigned.
-  STReservation st_res(ins, N);
-  st_res.seed_transient(Q_from);
-  st_res_ = &st_res;
+  //    Skipped when using spatial-only BFS (use_st_bfs == false).
+  std::unique_ptr<STReservation> st_res_ptr;
+  if (use_st_bfs) {
+    st_res_ptr = std::make_unique<STReservation>(ins, N);
+    st_res_ptr->seed_transient(Q_from);
+    st_res_ = st_res_ptr.get();
+  } else {
+    st_res_ = nullptr;
+  }
 
   // 1. Setup occupancy for current positions
   for (int i = 0; i < N; ++i) {
@@ -204,8 +212,10 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
       Q_to.positions[i] = stay;
       Q_to.kappa[i] = 0;
       mark_base_next(i, stay);
-      st_res.reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
-      st_res.mark_processed(i);
+      if (st_res_) {
+        st_res_->reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
+        st_res_->mark_processed(i);
+      }
     }
   }
 
@@ -227,8 +237,10 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
       Q_to.positions[i] = stay;
       Q_to.kappa[i] = (Q_from.kappa[i] + 1) % sp;
       mark_base_next(i, stay);
-      st_res.reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
-      st_res.mark_processed(i);
+      if (st_res_) {
+        st_res_->reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
+        st_res_->mark_processed(i);
+      }
     }
   }
 
@@ -291,7 +303,7 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
             _snc_fail_step3, _snc_fail_verify);
   }
 
-  st_res_ = nullptr;  // ephemeral table goes out of scope
+  st_res_ = nullptr;  // ephemeral table goes out of scope (or was never created)
   return success;
 }
 
@@ -656,22 +668,38 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
     mark_base_next(i, stay);
     Q_to.positions[i] = stay;
     Q_to.kappa[i] = next_kappa;
-    st_res_->reserve_stay(i, fid_i, stay->index, 0, 2);
-    st_res_->mark_processed(i);
+    if (st_res_) {
+      st_res_->reserve_stay(i, fid_i, stay->index, 0, 2);
+      st_res_->mark_processed(i);
+    }
     return true;
   }
 
   in_chain.insert(i);
 
-  // kappa == 0: agent CAN move. Build candidates via space-time BFS.
+  // kappa == 0: agent CAN move. Build candidates via BFS.
   auto *v_now = Q_from.positions[i];
   int bfs_depth = std::max(bfs_default_depth, cs_i);
 
-  // Fix endpoint to match actual position. A prior failed push cascade
-  // may have moved this agent's endpoint to a stale cell.
-  st_res_->agent_endpoints[i] = {fid_i, v_now->index, 0};
-
-  auto candidates = st_bfs_get_candidates(i, *st_res_, bfs_depth);
+  // Branch: space-time BFS (with reservation table) or spatial-only BFS
+  std::vector<ProposedPath> candidates;
+  if (use_st_bfs) {
+    // Fix endpoint to match actual position. A prior failed push cascade
+    // may have moved this agent's endpoint to a stale cell.
+    st_res_->agent_endpoints[i] = {fid_i, v_now->index, 0};
+    candidates = st_bfs_get_candidates(i, *st_res_, bfs_depth);
+  } else {
+    // Spatial-only BFS: populates C_next[i] and tie_breakers
+    bfs_get_candidates(i, Q_from, bfs_depth);
+    // Convert C_next to ProposedPath format for uniform handling below
+    for (auto *u : C_next[i]) {
+      ProposedPath pp;
+      pp.path = {v_now->index, u->index};
+      pp.first_step = u->index;
+      pp.cost = static_cast<int>(tie_breakers[u->id]);
+      candidates.push_back(std::move(pp));
+    }
+  }
 
   for (auto &pp : candidates) {
     // Convert fleet-cell index to Vertex*
@@ -775,9 +803,11 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
             if (Q_to.positions[a] != nullptr) {
               clear_base_next(a, Q_to.positions[a]);
               Q_to.positions[a] = nullptr;
-              int fid_a = ins->agents[a].fleet_id;
-              st_res_->reset_agent(a, fid_a,
-                                   Q_from.positions[a]->index);
+              if (st_res_) {
+                int fid_a = ins->agents[a].fleet_id;
+                st_res_->reset_agent(a, fid_a,
+                                     Q_from.positions[a]->index);
+              }
             }
           }
           // Restore in_chain so next candidate can try the same agents
@@ -790,8 +820,10 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
 
     // All pushes succeeded (or no pushes needed). Mark bitmap and reserve.
     mark_base_next(i, u);
-    st_res_->reserve_path(i, fid_i, 0, pp.path);
-    st_res_->mark_processed(i);
+    if (st_res_) {
+      st_res_->reserve_path(i, fid_i, 0, pp.path);
+      st_res_->mark_processed(i);
+    }
 
     // Kappa model: only advance on actual movement.
     if (u != v_now && sp > 1) {
@@ -811,8 +843,10 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
     mark_base_next(i, v_now);
     Q_to.positions[i] = v_now;
     Q_to.kappa[i] = 0;
-    st_res_->reserve_stay(i, fid_i, v_now->index, 0, 2);
-    st_res_->mark_processed(i);
+    if (st_res_) {
+      st_res_->reserve_stay(i, fid_i, v_now->index, 0, 2);
+      st_res_->mark_processed(i);
+    }
   }
   // If not free, leave Q_to.positions[i] as nullptr — caller handles it.
   return false;

@@ -23,6 +23,7 @@ struct HetPIBT {
   const DistTable *D;
   const int NO_AGENT;
   bool goal_lock;
+  bool use_st_bfs;  // true = space-time BFS, false = spatial-only BFS
 
   // Base-grid occupancy: base_cell_index -> agent_id or NO_AGENT
   int base_size;  // base_width * base_height
@@ -42,7 +43,7 @@ struct HetPIBT {
   STReservation* st_res_;
 
   HetPIBT(const Instance *_ins, const DistTable *_D, int seed = 0,
-          bool _goal_lock = false);
+          bool _goal_lock = false, bool _use_st_bfs = true);
   ~HetPIBT();
 
   // Main entry: generate a new HetConfig from Q_from, filling Q_to.

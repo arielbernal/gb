@@ -7,6 +7,7 @@ bool Planner::FLG_STAR = false;  // Phase 1: no anytime by default
 bool Planner::FLG_GOAL_LOCK = false;
 int Planner::PIBT_NUM = 1;      // Phase 1: single PIBT
 bool Planner::FLG_MULTI_THREAD = false;
+bool Planner::FLG_ST_BFS = true;  // space-time BFS by default
 float Planner::RANDOM_INSERT_PROB1 = 0.0;
 float Planner::RANDOM_INSERT_PROB2 = 0.0;
 
@@ -38,7 +39,7 @@ Planner::Planner(const Instance *_ins, int _verbose, const Deadline *_deadline,
 {
   // Create PIBT instances
   for (int k = 0; k < PIBT_NUM; ++k) {
-    pibts.push_back(new HetPIBT(ins, D, k + seed, FLG_GOAL_LOCK));
+    pibts.push_back(new HetPIBT(ins, D, k + seed, FLG_GOAL_LOCK, FLG_ST_BFS));
   }
 }
 

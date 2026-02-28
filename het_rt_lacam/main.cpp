@@ -65,6 +65,10 @@ int main(int argc, char *argv[])
   program.add_argument("--rt-budget")
       .help("node expansion budget per RT step")
       .default_value(std::string("100"));
+  program.add_argument("--no-st-bfs")
+      .help("use spatial-only BFS instead of space-time BFS")
+      .default_value(false)
+      .implicit_value(true);
   try {
     program.parse_known_args(argc, argv);
   } catch (const std::runtime_error &err) {
@@ -117,6 +121,7 @@ int main(int argc, char *argv[])
   Planner::CHECKPOINTS_DURATION =
       std::stof(program.get<std::string>("checkpoints-duration")) * 1000;
 
+  Planner::FLG_ST_BFS = !program.get<bool>("no-st-bfs");
   const auto rt_mode = program.get<bool>("rt");
   const auto rt_budget = std::stoi(program.get<std::string>("rt-budget"));
 
