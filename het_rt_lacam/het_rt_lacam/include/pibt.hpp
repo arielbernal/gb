@@ -12,6 +12,7 @@
 #include "dist_table.hpp"
 #include "graph.hpp"
 #include "instance.hpp"
+#include "st_reservation.hpp"
 #include "utils.hpp"
 
 struct HetPIBT {
@@ -37,6 +38,9 @@ struct HetPIBT {
   std::vector<std::deque<int>> recent_cells;  // oscillation history per agent
   int bfs_default_depth;                       // default BFS depth (2)
 
+  // Space-time reservation table (non-owning, set per set_new_config call)
+  STReservation* st_res_;
+
   HetPIBT(const Instance *_ins, const DistTable *_D, int seed = 0,
           bool _goal_lock = false);
   ~HetPIBT();
@@ -58,6 +62,13 @@ struct HetPIBT {
 
   // BFS candidate generation (replaces 1-step neighbor enumeration)
   void bfs_get_candidates(int agent_id, const HetConfig &Q_from, int depth);
+
+  // Space-time BFS candidate generation using reservation table.
+  // Returns up to 5 ProposedPath candidates sorted by cost.
+  // Requires st_res_ to be set before calling.
+  std::vector<ProposedPath> st_bfs_get_candidates(int agent_id,
+                                                   STReservation &res,
+                                                   int depth);
 
   // Footprint helpers
   void mark_base_now(int agent_id, Vertex *v);

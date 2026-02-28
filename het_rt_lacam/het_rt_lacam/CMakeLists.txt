@@ -12,6 +12,7 @@ add_library(het_rt_lacam STATIC
   src/pibt.cpp
   src/planner.cpp
   src/post_processing.cpp
+  src/st_reservation.cpp
   src/utils.cpp
 )
 

@@ -1,0 +1,998 @@
+# RT-LaCAM C++ Implementation Plan
+
+**Phase 2: Adding Real-Time Incremental Execution to Het-RT-LaCAM**
+
+For: Project Manager directing 3 Claude Code agents (LEFT / CENTER / RIGHT)
+Date: February 2026
+Codebase: `E:\gb\het_rt_lacam\` (renamed from het_lacam, fork of lacam3)
+
+---
+
+## Executive Summary
+
+RT-LaCAM transforms standard LaCAM from "compute full solution then execute" into "compute one step, execute it, continue computing." The change is surprisingly small: **persist the DFS state between calls and don't clear Explored.** We have two references: the original lacam3 C++ code (Okumura) and a Python RT-LaCAM implementation from the paper's co-author (Rishi Veerapaneni, MIT license, `github.com/Rishi-V/ML-MAPF-with-Search`).
+
+The Python reference proves the core mechanism is ~15 lines of logic on top of standard LaCAM. The C++ version will be more work because of memory management, but the algorithmic change is minimal.
+
+**Total estimated effort: 8–14 hours across 3 agents.**
+
+---
+
+## Part 1: What RT-LaCAM Actually Is
+
+### The Three Operations Per Timestep
+
+Every real-world timestep, RT-LaCAM does:
+
+1. **SEARCH** — Continue the LaCAM DFS for up to T milliseconds (or N node expansions). This is identical to standard LaCAM's main loop. Open stack, Explored table, constraint trees all persist from the previous timestep.
+
+2. **EXTRACT** — Find what to execute. Backtrack through parent pointers from the DFS frontier back to the current root. Take the first child of the root along this path.
+
+3. **REROOT** — Reverse the parent pointer between the old root and the child we're moving to. That child becomes the new root.
+
+### What the Python Reference Tells Us
+
+The Python reference (`ML-MAPF-with-Search/main_pys/simulator.py`, class `LaCAMRunner`) implements RT-LaCAM with an even simpler trick:
+
+```python
+# Line 336-339: State persists as class members
+def __init__(self, real_time=False):
+    self.mainStack = deque()        # persists between calls
+    self.stateToHLNodes = dict()    # persists between calls  
+    self.real_time = real_time
+
+# Line 355-357: Standard LaCAM clears state; RT does NOT
+if not self.real_time:
+    self.mainStack.clear()
+    self.stateToHLNodes = dict()
+
+# Line 404-405: RT just returns [current, next_state]
+if self.real_time:
+    entirePath = [start_locations, new_locs]
+```
+
+**Critical observation:** The Python version does NOT do explicit rerooting. It just persists the stack and Explored table, calls `lacam()` with the new current position, and the persistent Explored prevents revisiting. The `lacamLimit` is forced to 1 (one node generation per call).
+
+**This means our C++ implementation can follow the same pattern:** Don't touch parent pointers at all. Just persist state and limit the search per call. The paper describes rerooting for theoretical elegance, but the implementation doesn't need it if we extract the path differently (see Part 3).
+
+### What's Different About Our Case (Het-Specific)
+
+Our het_rt_lacam already has:
+- `HetConfig{positions, kappa}` — augmented configurations with speed-phase counters
+- Hash/equality that includes kappa values
+- HetPIBT as config generator with footprint-aware collision checking
+- Fleet graphs with non-overlapping tiling
+
+RT adds nothing het-specific. The RT layer treats configurations as opaque — it only needs hash, equality, and parent pointers. All heterogeneous logic lives in the config generator (HetPIBT) and collision checking, which are unchanged.
+
+---
+
+## Part 2: Architecture — What Changes vs What Doesn't
+
+### What DOES NOT Change
+
+| Component | Why No Change |
+|---|---|
+| HetConfig (positions + kappa) | RT treats configs as opaque. Hash/equality already correct. |
+| HetPIBT (config generator) | Black-box `get_new_config(N, C)` interface is unchanged. |
+| Constraint tree / LNode | Same lazy BFS over constraints. Same expansion logic. |
+| Fleet graphs | Static. Built once. |
+| Collision checking | to_base_cells(), footprint projection — all unchanged. |
+| Speed-phase transitions | Kappa updates happen inside config generation, not the search. |
+
+### What DOES Change
+
+| Component | Current (Phase 1) | Target (Phase 2) |
+|---|---|---|
+| **DFS state lifetime** | Local to `solve()`, discarded after return | Persistent class members, survive between calls |
+| **Main entry point** | `solve()` → returns full path | `solve_one_step(budget)` → returns next config. Called in a loop. |
+| **Termination** | Goal found OR Open empty | Budget exhausted OR goal found OR Open empty |
+| **Output** | Complete path `[C0, C1, ..., Cgoal]` | Single next config `C_next` |
+| **main.cpp** | Calls `solve()` once | Has `--rt` mode that loops `solve_one_step()` |
+
+### File-Level Change Map
+
+```
+het_rt_lacam/
+├── include/
+│   ├── planner.hpp    ← MODIFY: Add persistent state members, solve_one_step()
+│   └── instance.hpp   ← NO CHANGE
+│   └── ...            ← NO CHANGE
+├── src/
+│   ├── planner.cpp    ← MODIFY: Refactor solve() guts, add solve_one_step()
+│   └── main.cpp       ← MODIFY: Add --rt flag, outer execution loop
+│   └── ...            ← NO CHANGE
+└── tests/
+    └── ...            ← ADD: RT-specific tests
+```
+
+---
+
+## Part 3: The Algorithm in Detail
+
+### 3.1 Current solve() Structure (What We're Refactoring)
+
+The current `solve()` in het_rt_lacam (forked from lacam3) looks roughly like this:
+
+```cpp
+Solution solve(const Instance& ins) {
+    // --- These are ALL LOCAL ---
+    std::stack<HNode*> OPEN;
+    std::unordered_map<HetConfig, HNode*, ...> EXPLORED;
+    std::vector<HNode*> node_pool;  // or arena allocation
+    
+    // Initialize
+    auto* N_init = new_node(ins.starts, nullptr);
+    N_init->tree.push(new_cnode_root());
+    OPEN.push(N_init);
+    EXPLORED[ins.starts] = N_init;
+    
+    // Main DFS loop
+    while (!OPEN.empty()) {
+        auto* N = OPEN.top();
+        
+        if (N->config == ins.goals) return backtrack(N);
+        if (N->tree.empty()) { OPEN.pop(); continue; }
+        
+        auto* C = N->tree.front(); N->tree.pop();
+        expand_constraint_children(N, C);
+        
+        auto Q_new = get_new_config(N, C);  // calls HetPIBT
+        if (Q_new == FAILURE) continue;
+        if (EXPLORED.count(Q_new)) {
+            OPEN.push(EXPLORED[Q_new]);  // reinsert
+            continue;
+        }
+        
+        auto* N_new = new_node(Q_new, N);
+        OPEN.push(N_new);
+        EXPLORED[Q_new] = N_new;
+    }
+    return NO_SOLUTION;
+}
+```
+
+### 3.2 Target: Persistent State + solve_one_step()
+
+**Step 1: Move locals to class members.**
+
+```cpp
+class Solver {
+private:
+    // --- Persistent DFS state (survive between solve_one_step calls) ---
+    std::stack<HNode*> OPEN;
+    std::unordered_map<HetConfig, HNode*, ConfigHash> EXPLORED;
+    std::vector<std::unique_ptr<HNode>> node_pool;
+    std::vector<std::unique_ptr<LNode>> cnode_pool;
+    
+    HNode* current_root = nullptr;     // where agents are now
+    bool initialized = false;
+    
+    // --- Result tracking ---
+    HNode* goal_node = nullptr;        // set when goal config found
+    HNode* latest_expanded = nullptr;  // most recent node expanded (for extract)
+    
+public:
+    enum Status { SEARCHING, GOAL_FOUND, NO_SOLUTION };
+    
+    void initialize(const HetConfig& start);
+    Status search(int node_budget);      // expand up to N nodes
+    HetConfig extract_next_step();       // backtrack to find next move
+    void advance(const HetConfig& next); // update current_root
+    
+    // Convenience wrapper
+    HetConfig solve_one_step(int node_budget);
+};
+```
+
+**Step 2: The search loop is the same as solve(), just with a budget.**
+
+```cpp
+Solver::Status Solver::search(int node_budget) {
+    if (!initialized) initialize(start_config);
+    
+    int expanded = 0;
+    while (!OPEN.empty() && expanded < node_budget) {
+        HNode* N = OPEN.top();
+        
+        // Goal check
+        if (N->config == goal_config) {
+            goal_node = N;
+            return GOAL_FOUND;
+        }
+        
+        // Exhausted → backtrack
+        if (N->tree.empty()) {
+            OPEN.pop();
+            continue;
+        }
+        
+        // Pop constraint, expand children (IDENTICAL to standard LaCAM)
+        LNode* C = N->tree.front();
+        N->tree.pop();
+        expand_constraint_children(N, C);
+        
+        // Generate successor
+        HetConfig Q_new = get_new_config(N, C);
+        if (Q_new == FAILURE) continue;
+        
+        if (EXPLORED.count(Q_new)) {
+            // REINSERT: push existing node back on stack
+            OPEN.push(EXPLORED[Q_new]);
+            continue;
+        }
+        
+        // New config
+        HNode* N_new = make_node(Q_new, N);
+        OPEN.push(N_new);
+        EXPLORED[Q_new] = N_new;
+        latest_expanded = N_new;
+        expanded++;
+    }
+    
+    if (OPEN.empty()) return NO_SOLUTION;
+    return SEARCHING;
+}
+```
+
+**Step 3: Extract next step by backtracking parent pointers.**
+
+```cpp
+HetConfig Solver::extract_next_step() {
+    // Target: goal if found, else deepest node on stack
+    HNode* target = goal_node ? goal_node : latest_expanded;
+    if (!target || target == current_root) return current_root->config;
+    
+    // Walk parent pointers from target back to current_root
+    // We want the CHILD of current_root on this path
+    HNode* child = target;
+    HNode* walk = target;
+    while (walk->parent != nullptr && walk->parent != current_root) {
+        walk = walk->parent;
+    }
+    
+    if (walk->parent == current_root) {
+        return walk->config;  // This is the immediate child of root
+    }
+    
+    // Fallback: target isn't reachable from current_root via parents
+    // This shouldn't happen if the tree is consistent
+    // Return current config (stay in place)
+    return current_root->config;
+}
+```
+
+**Step 4: Advance (update what the "current position" is).**
+
+Following the Python pattern — NO rerooting needed:
+
+```cpp
+void Solver::advance(const HetConfig& next) {
+    // Just update what we consider "current"
+    assert(EXPLORED.count(next));
+    current_root = EXPLORED[next];
+}
+```
+
+> **Why no reroot?** The Python reference proves it's unnecessary. The DFS tree's parent pointers are only used for two things: (1) backtracking in extract_next_step, and (2) extracting the full solution path when goal is found. For (1), we walk from the frontier toward current_root, which works fine without rerooting. For (2), when the goal is found we can reconstruct the path from the execution history (the outer loop's `executed_path` vector), not from parent pointers. The persistent Explored table is what prevents livelock — parent pointers are irrelevant to completeness.
+
+**Step 5: The convenience wrapper.**
+
+```cpp
+HetConfig Solver::solve_one_step(int node_budget) {
+    Status s = search(node_budget);
+    
+    if (s == GOAL_FOUND) {
+        // Extract path from current_root to goal via parents
+        // (or just return next step toward goal)
+        HetConfig next = extract_next_step();
+        advance(next);
+        return next;
+    }
+    
+    if (s == NO_SOLUTION) {
+        // All configs exhausted, no solution exists
+        return current_root->config;  // stay in place, caller checks status
+    }
+    
+    // SEARCHING — budget expired, pick best direction
+    HetConfig next = extract_next_step();
+    advance(next);
+    return next;
+}
+```
+
+### 3.3 The Outer Loop (main.cpp)
+
+```cpp
+// In main.cpp, when --rt flag is set:
+Solver solver(instance, fleets);
+
+HetConfig current = instance.starts;
+std::vector<HetConfig> executed_path;
+executed_path.push_back(current);
+
+auto total_start = high_resolution_clock::now();
+
+while (current != instance.goals) {
+    HetConfig next = solver.solve_one_step(node_budget);
+    
+    // Validate transition
+    assert(is_valid_transition(current, next, fleets));
+    
+    executed_path.push_back(next);
+    current = next;
+    
+    // Check solver status
+    if (solver.status() == Solver::NO_SOLUTION) {
+        std::cout << "UNSOLVABLE" << std::endl;
+        break;
+    }
+    
+    // Overall timeout
+    auto elapsed = duration_cast<milliseconds>(
+        high_resolution_clock::now() - total_start).count();
+    if (elapsed > total_timeout_ms) {
+        std::cout << "TIMEOUT after " << executed_path.size() 
+                  << " steps" << std::endl;
+        break;
+    }
+}
+
+// Output metrics
+print_metrics(executed_path, solver);
+```
+
+### 3.4 Node Budget vs Time Budget
+
+The Python reference uses `lacamLimit` (node count), not wall-clock time. Both work:
+
+| Budget Type | Pros | Cons |
+|---|---|---|
+| **Node count** (recommended for now) | Deterministic, reproducible, easy to test | Doesn't guarantee wall-clock bound |
+| **Wall-clock time** | Real-time guarantees | Non-deterministic, harder to test/debug |
+
+**Recommendation:** Start with node budget (e.g., `--rt-budget 1` = expand 1 node per step, matching the Python reference). Add time budget later as an optimization.
+
+With `budget=1`, RT-LaCAM generates exactly one new configuration per execution step — the minimum possible. This is what the paper calls the "one-step version" and is what the Python reference implements.
+
+---
+
+## Part 4: Critical Design Decisions
+
+### 4.1 Reinsert Optimization — ESSENTIAL
+
+Line 388-389 of the Python reference:
+```python
+if key in self.stateToHLNodes.keys():
+    curNode = self.stateToHLNodes[key]
+    self.mainStack.appendleft(curNode)  # REINSERT
+```
+
+When the search generates a config that already exists in Explored, it pushes the existing node back onto the stack. This is NOT optional — it forces the constraint tree of that node to advance, which is the mechanism that eventually exhausts all successors and causes backtracking.
+
+In C++, this corresponds to:
+```cpp
+if (EXPLORED.count(Q_new)) {
+    OPEN.push(EXPLORED[Q_new]);  // DO NOT SKIP — push existing node
+    continue;
+}
+```
+
+Standard LaCAM (Okumura 2023, line 16) skips known configs. The "reinsert" optimization was added in lacam2/lacam3. **Verify that het_rt_lacam already does reinsert** — if it skips, RT-LaCAM will be incomplete.
+
+> **Agent task: Check what het_rt_lacam does when it encounters a known config.** Look for the equivalent of `if (EXPLORED.count(Q_new))`. Does it skip or reinsert? If it skips, change it to reinsert.
+
+### 4.2 extract_next_step() and the Parent Chain Issue
+
+When we call `extract_next_step()`, we walk parent pointers from the frontier toward `current_root`. But after `advance()`, `current_root` changes. The parent chain from any future frontier node must still pass through the new `current_root` — **is this guaranteed?**
+
+**Yes, because of DFS.** The stack is LIFO. The current root's successor was pushed most recently, and all subsequent nodes are descendants of it. The parent chain from any node on the stack passes through all its ancestors, including the node we advanced to.
+
+**However**, there's an edge case: if the stack contains nodes from BEFORE the current root's subtree (from backtracking), their parent chains go through the OLD root, not the new one. This is fine — `extract_next_step()` will still find a valid path because:
+1. If `latest_expanded` is in the current subtree → parent chain reaches current_root ✓
+2. If the search backtracks past current_root → we need to handle this
+
+**The Python reference sidesteps this entirely** by returning `[start_locations, new_locs]` (line 404-405) — it doesn't walk parent pointers at all. The `new_locs` is just the last config generated by `getNextState()`, regardless of tree structure.
+
+**Recommendation for C++:** Follow the Python pattern. Don't walk parent pointers for extract. Instead:
+
+```cpp
+HetConfig Solver::extract_next_step() {
+    // The search just generated new_locs as the latest config.
+    // If it's a new config, it's a child of the top-of-stack node.
+    // Return it directly — the outer loop validates the transition.
+    
+    if (last_generated_config.has_value()) {
+        return last_generated_config.value();
+    }
+    // If search made no progress (all configs known), stay in place
+    return current_root->config;
+}
+```
+
+This is simpler, avoids the parent chain issue entirely, and matches the reference implementation.
+
+**BUT WAIT** — if we do this, we need the transition from `current_root->config` to `last_generated_config` to be a valid single step. It won't be if the DFS explored several levels deep in one budget period. 
+
+**Resolution:** With `budget=1`, the search generates exactly one new config per call. That config is a child of some node on the stack. If the stack's top is the current root, the new config IS one step away. If the stack's top is deeper, the new config is NOT one step away from the root.
+
+**This is why the Python reference works differently than the paper.** The Python reference:
+1. Calls `lacam()` with `lacamLimit=1` — generates one new node
+2. Returns `[start_locations, new_locs]` — the new config
+3. The outer loop computes `new_move = next_locs[1] - cur_locs` — applies as displacement
+
+But `new_locs` might not be one step from `cur_locs`! It's the child of whatever node was on top of the stack, which could be many levels deep. The Python code at line 564:
+```python
+new_move = next_locs[1] - cur_locs  # This is a displacement vector
+```
+This just moves agents by the difference. If the new config is 5 levels deep, agents teleport. **This is likely a bug or simplification in the reference for homogeneous point agents where any displacement is a valid move.**
+
+**For our implementation:** We need to be more careful. Two options:
+
+**Option A (Simple, matches paper):** After search, walk parent pointers from the frontier to `current_root`. Execute ONE step (the immediate child of root). This is the paper's algorithm.
+
+**Option B (Simple, matches Python):** Require `budget=1` and ensure we only advance one DFS level per call. Track which node was on top of stack before the search and which is on top after. The new config's parent should be the previous top-of-stack.
+
+**Recommendation: Option A.** It's more robust and works with any budget size.
+
+### 4.3 What Happens When DFS Backtracks Past Current Root?
+
+If the DFS exhausts the subtree below `current_root` without finding the goal, it will pop `current_root` from the stack and continue with `current_root->parent` (which was the configuration before we moved here). This means the DFS "backtracks" in configuration space, essentially saying "we shouldn't have come here."
+
+In standard LaCAM this is fine — it just explores another branch. In RT-LaCAM, the agents are physically AT `current_root`'s config. The DFS is now exploring configs reachable from the PARENT of where agents are.
+
+**The paper handles this** by saying agents follow the DFS frontier — they may need to backtrack physically. The extract step walks from frontier to root, and the root might not be on the current DFS branch. The agents move toward wherever the DFS thinks is promising, even if that means retracing steps.
+
+**Practical handling:**
+
+```cpp
+HetConfig Solver::extract_next_step() {
+    HNode* target = goal_node ? goal_node : get_top_of_open();
+    if (!target) return current_root->config;  // Open empty
+    
+    // Build path from current_root to target through the DFS tree
+    // This may go UP (toward start) before going DOWN (toward goal)
+    
+    // Step 1: Collect ancestors of target
+    std::unordered_set<HNode*> target_ancestors;
+    for (HNode* n = target; n; n = n->parent) {
+        target_ancestors.insert(n);
+    }
+    
+    // Step 2: Find the Lowest Common Ancestor (LCA) with current_root
+    HNode* lca = current_root;
+    while (lca && !target_ancestors.count(lca)) {
+        lca = lca->parent;
+    }
+    
+    // Step 3: Path is: current_root → ... → LCA → ... → target
+    // First step: go toward LCA (i.e., current_root->parent)
+    // Unless current_root IS the LCA, then go toward target
+    
+    if (lca == current_root) {
+        // Target is a descendant of current_root
+        // Walk from target toward current_root, take the child
+        HNode* walk = target;
+        while (walk->parent != current_root) walk = walk->parent;
+        return walk->config;
+    } else {
+        // Need to backtrack: move toward parent
+        // current_root->parent should be in EXPLORED
+        return current_root->parent->config;
+    }
+}
+```
+
+**This is complex.** For a first implementation, we can simplify:
+
+> **Simplification for v1:** If the DFS backtracks past `current_root`, just call HetPIBT directly (without LaCAM constraints) to get a one-step move. Log this as a "backtrack step." This avoids the LCA complexity and still makes progress. Revisit with proper tree navigation in v2 if needed.
+
+### 4.4 Memory Management
+
+The Explored table and node pool grow monotonically. For N agents on a map with V vertices and S speed phases, the theoretical max is `V^N × S^N` entries, but in practice:
+
+- n=5 on room-64-64-8: a few hundred configs explored
+- n=10: a few thousand
+- n=25: tens of thousands (potentially)
+
+Each HNode stores: config (~N×8 bytes), parent pointer (8 bytes), constraint tree (variable), agent ordering (~N×4 bytes). Estimate ~200 bytes per node for N=10.
+
+**10,000 nodes × 200 bytes = 2 MB.** Not a concern.
+
+Use `std::unique_ptr<HNode>` in the node pool for automatic cleanup. The Explored table stores raw pointers (non-owning).
+
+---
+
+## Part 5: Implementation Tasks
+
+### Dependency Graph
+
+```
+Task 1: Verify reinsert behavior in het_rt_lacam
+   ↓
+Task 2: Refactor Solver — move DFS state to class members
+   ↓
+Task 3: Implement search(budget) — DFS with node limit
+   ↓
+Task 4: Implement extract_next_step()
+   ↓
+Task 5: Implement advance() + solve_one_step() wrapper
+   ↓
+Task 6: Add --rt mode to main.cpp with outer execution loop
+   ↓
+Task 7: Tests on small instances
+   ↓
+Task 8: Benchmark on bottleneck maps
+
+Task 9: (parallel with 3-6) Speed-gate constraint tree optimization
+```
+
+---
+
+### Task 1: Verify Reinsert Behavior
+
+**Agent:** Any
+**Effort:** 30 minutes
+**Prereqs:** None
+
+**What to do:**
+1. Open `het_rt_lacam/src/planner.cpp`
+2. Find the DFS loop — look for the equivalent of `if (EXPLORED.count(Q_new))`
+3. Check: does it `continue` (skip) or push the existing node back onto OPEN?
+4. If it skips → change to reinsert: `OPEN.push(EXPLORED[Q_new]); continue;`
+5. Run existing tests to confirm nothing breaks
+
+**Why this matters:** Reinsert is essential for RT-LaCAM completeness. Without it, constraint trees of bottleneck nodes never advance, and the search gets stuck generating the same successors forever.
+
+**Verification:** Run existing n5 and n10 tests. Results should be same or better (reinsert can improve solution quality).
+
+---
+
+### Task 2: Refactor Solver — Persistent DFS State
+
+**Agent:** LEFT (structural change, touches class definition)
+**Effort:** 1–2 hours
+**Prereqs:** Task 1
+
+**What to do:**
+
+1. In `planner.hpp`, move these from local variables inside `solve()` to private class members:
+   - The OPEN stack
+   - The EXPLORED hash table
+   - The node allocation pool (HNode arena)
+   - The constraint node pool (LNode arena)
+
+2. Add new class members:
+   ```cpp
+   HNode* current_root_ = nullptr;
+   bool initialized_ = false;
+   HNode* goal_node_ = nullptr;
+   HNode* latest_generated_ = nullptr;  // last config generated by search
+   ```
+
+3. Add a `reset()` method that clears all state (for non-RT mode or new instances).
+
+4. **Keep `solve()` working exactly as before** by having it use the same member variables. This is a pure refactor — no behavior change.
+
+**Verification:** ALL existing tests must pass identically. Run full n5, n10, n25 suite. Compare outputs byte-for-byte with pre-refactor.
+
+**Critical rule:** Do NOT change any algorithm logic. Do NOT change the DFS loop. Only move ownership of variables from local scope to class scope.
+
+---
+
+### Task 3: Implement search(budget)
+
+**Agent:** CENTER (core algorithm)
+**Effort:** 2–3 hours
+**Prereqs:** Task 2
+
+**What to do:**
+
+1. Add `Solver::Status search(int node_budget)` that runs the DFS loop with a counter:
+
+```cpp
+enum class Status { SEARCHING, GOAL_FOUND, NO_SOLUTION };
+
+Status Solver::search(int node_budget) {
+    if (!initialized_) {
+        initialize(start_config_);
+    }
+    
+    int generated = 0;
+    latest_generated_ = nullptr;
+    
+    while (!OPEN_.empty() && generated < node_budget) {
+        // ... exact same DFS logic as solve() ...
+        // When a NEW config is created and added to EXPLORED:
+        latest_generated_ = N_new;
+        generated++;
+    }
+    
+    if (goal_node_) return Status::GOAL_FOUND;
+    if (OPEN_.empty()) return Status::NO_SOLUTION;
+    return Status::SEARCHING;
+}
+```
+
+2. The `initialize()` method creates the root node and pushes it:
+
+```cpp
+void Solver::initialize(const HetConfig& start) {
+    auto* N_init = make_node(start, nullptr);
+    N_init->tree.push(make_cnode_root());
+    N_init->order = get_initial_order(start);
+    OPEN_.push(N_init);
+    EXPLORED_[start] = N_init;
+    current_root_ = N_init;
+    initialized_ = true;
+}
+```
+
+**Verification:** With `node_budget = INT_MAX`, `search()` should produce the exact same exploration as `solve()`. Test by counting EXPLORED size and comparing against standard solve on the same instances.
+
+---
+
+### Task 4: Implement extract_next_step()
+
+**Agent:** CENTER (continues from Task 3)
+**Effort:** 1–2 hours
+**Prereqs:** Task 3
+
+**What to do:**
+
+Implement the parent-pointer walk from the DFS frontier to `current_root_`:
+
+```cpp
+HetConfig Solver::extract_next_step() {
+    // If goal found, target is goal node
+    // Otherwise, target is the latest node we generated
+    HNode* target = goal_node_ ? goal_node_ : latest_generated_;
+    
+    if (!target || target == current_root_) {
+        return current_root_->config;  // stay in place
+    }
+    
+    // Walk from target toward current_root_, collecting path
+    HNode* walk = target;
+    while (walk != nullptr && walk->parent != current_root_) {
+        walk = walk->parent;
+    }
+    
+    if (walk && walk->parent == current_root_) {
+        // walk is the immediate child of current_root_ on the path to target
+        return walk->config;
+    }
+    
+    // Fallback: target not reachable from current_root via parents
+    // This happens when DFS has backtracked past current_root
+    // Return parent of current_root (backtrack one step)
+    if (current_root_->parent) {
+        return current_root_->parent->config;
+    }
+    
+    // At the very root with nowhere to go — stay
+    return current_root_->config;
+}
+```
+
+**Edge cases to handle:**
+1. `latest_generated_ == nullptr` (search made no progress) → stay in place
+2. `target == current_root_` → stay in place (we're already where we want to be)
+3. Target's parent chain doesn't reach `current_root_` → backtrack (DFS went past us)
+4. `OPEN` is empty → NO_SOLUTION, stay in place
+
+**Verification:** On a simple 2-agent instance, trace the parent chain manually and confirm extract returns the correct next step.
+
+---
+
+### Task 5: advance() + solve_one_step() Wrapper
+
+**Agent:** CENTER (continues from Task 4)
+**Effort:** 30 minutes
+**Prereqs:** Task 4
+
+```cpp
+void Solver::advance(const HetConfig& next) {
+    assert(EXPLORED_.count(next));
+    current_root_ = EXPLORED_[next];
+    // Note: we do NOT clear OPEN or EXPLORED
+    // The DFS state persists — this is the whole point of RT-LaCAM
+}
+
+HetConfig Solver::solve_one_step(int node_budget) {
+    Status s = search(node_budget);
+    
+    if (s == Status::NO_SOLUTION) {
+        return current_root_->config;  // unsolvable
+    }
+    
+    HetConfig next = extract_next_step();
+    if (next != current_root_->config) {
+        advance(next);
+    }
+    return next;
+}
+```
+
+**Verification:** Sequence of `solve_one_step()` calls should eventually reach the goal on solvable n5 instances.
+
+---
+
+### Task 6: Add --rt Mode to main.cpp
+
+**Agent:** LEFT (structural, touches CLI and I/O)
+**Effort:** 1–2 hours
+**Prereqs:** Tasks 2–5
+
+**What to do:**
+
+1. Add CLI flags:
+   - `--rt` — enable real-time mode
+   - `--rt-budget N` — node expansion budget per step (default: 1)
+
+2. When `--rt` is set, run the outer execution loop instead of calling `solve()`:
+
+```cpp
+if (args.rt_mode) {
+    Solver solver(instance, fleets);
+    HetConfig current = instance.starts;
+    std::vector<HetConfig> executed_path;
+    executed_path.push_back(current);
+    
+    auto t_start = high_resolution_clock::now();
+    
+    while (current != instance.goals) {
+        HetConfig next = solver.solve_one_step(args.rt_budget);
+        
+        if (next == current && solver.status() == Solver::NO_SOLUTION) {
+            std::cout << "result=no_solution" << std::endl;
+            break;
+        }
+        
+        executed_path.push_back(next);
+        current = next;
+        
+        auto elapsed_ms = duration_cast<milliseconds>(
+            high_resolution_clock::now() - t_start).count();
+        if (elapsed_ms > args.time_limit_ms) {
+            std::cout << "result=timeout steps=" << executed_path.size() << std::endl;
+            break;
+        }
+    }
+    
+    if (current == instance.goals) {
+        std::cout << "result=success" << std::endl;
+    }
+    
+    // Output metrics
+    print_rt_metrics(executed_path, solver);
+}
+```
+
+3. Output metrics should include:
+   - `steps_executed` — length of executed_path
+   - `configs_explored` — EXPLORED.size()
+   - `total_search_time_ms` — sum of all search() times
+   - `solution_cost` — sum-of-costs of executed path
+   - `makespan` — length of executed path
+
+**Verification:** `./het_rt_lacam -m map -s scen --rt --rt-budget 1` should solve n5 instances and print valid metrics.
+
+---
+
+### Task 7: Tests
+
+**Agent:** RIGHT
+**Effort:** 2–3 hours
+**Prereqs:** Task 6
+
+Write tests for:
+
+| # | Test | What It Verifies |
+|---|---|---|
+| 1 | RT mode solves all n5 instances that standard mode solves | Completeness preserved |
+| 2 | RT mode does NOT solve instances standard mode can't | No false positives |
+| 3 | Each executed step is a valid transition | Collision-free, single-step, kappa correct |
+| 4 | EXPLORED.size() only grows between steps | No state corruption |
+| 5 | With budget=INT_MAX, RT mode produces same EXPLORED size as standard | Identical exploration |
+| 6 | Success rate is invariant to budget (1, 10, 100, 1000) | Budget affects quality, not solvability |
+
+**How to implement:**
+- Use the existing test infrastructure
+- Run standard solve() first, record solved/unsolved
+- Run RT solve_one_step() loop, compare success sets
+- For transition validation: check `is_connected(C_old, C_new)` using existing collision checking
+
+---
+
+### Task 8: Benchmark on Bottleneck Maps
+
+**Agent:** RIGHT (after Task 7)
+**Effort:** 1–2 hours
+**Prereqs:** Task 7
+
+Run RT-LaCAM on all 4 bottleneck map types (bottleneck_doors, corridor_speed, intersection, cooperative_clearing) at n5, n10, n25 with:
+- Budgets: 1, 10, 100, 1000 nodes per step
+- Compare against: standard het_lacam solve(), standalone HetPIBT
+
+Record: success_rate, SOC, makespan, total_time_ms, explored_configs, steps_executed
+
+**Expected results:**
+- Success rate identical to standard het_lacam across ALL budgets
+- SOC/makespan worse with budget=1, approaching standard with budget=1000
+- HetPIBT success rate lower (it deadlocks on 46% of intersection/cooperative instances)
+- Total search time similar to standard mode (pausing doesn't add overhead)
+
+---
+
+### Task 9: Speed-Gate Constraint Tree Optimization (Parallel)
+
+**Agent:** RIGHT (can start after Task 2, parallel with 3–6)
+**Effort:** 1–2 hours
+**Prereqs:** Task 2
+
+In the constraint tree expansion, when generating children for agent i:
+- If `kappa[i] > 0` (agent is mid-speed-phase, must stay) → generate ONLY stay-in-place child
+- If `kappa[i] == 0` (agent ready to move) → generate all `neigh(v) ∪ {v}` children
+
+This dramatically reduces branching when half the agents are speed-gated.
+
+**Where to change:** Find the constraint tree expansion in `planner.cpp` — the loop that does:
+```cpp
+for (int u : neighbors_plus_self(i, v)) {
+    // create constraint child
+}
+```
+
+Change to:
+```cpp
+if (config.kappa[i] > 0) {
+    // Speed-gated: only stay option
+    create_constraint_child(C, i, v);  // v = current position
+} else {
+    // Normal: all neighbors + stay
+    for (int u : neighbors_plus_self(i, v)) {
+        create_constraint_child(C, i, u);
+    }
+}
+```
+
+**Verification:** Count constraint nodes generated before/after. Should see significant reduction on instances with speed heterogeneity. Solutions should be identical or better (fewer useless constraints explored).
+
+---
+
+## Part 6: Agent Assignment and Timeline
+
+### Parallel Execution Plan
+
+```
+TIME    LEFT                    CENTER                  RIGHT
+─────   ────────────────────    ─────────────────────   ──────────────────────
+Hr 0    Task 1 (verify          (idle)                  (idle)
+        reinsert)
+Hr 1    Task 2 (refactor        (waiting for T2)        Task 9 (speed-gate opt)
+        solver state)                                    — can start after T2
+Hr 2    Task 2 cont'd           (waiting for T2)        Task 9 cont'd
+Hr 3    Task 6 (--rt flag       Task 3 (search loop)    (idle or start test
+        + main.cpp)                                      scaffolding)
+Hr 4    Task 6 cont'd           Task 3 cont'd           
+Hr 5    (idle)                  Task 4 (extract)        Task 7 (tests)
+Hr 6    (idle)                  Task 5 (advance/wrap)   Task 7 cont'd
+Hr 7    Review + integration    Review + integration    Task 7 cont'd
+Hr 8    Bug fixes               Bug fixes               Task 8 (benchmarks)
+Hr 9                                                    Task 8 cont'd
+```
+
+**Critical path:** Task 2 → Task 3 → Task 4 → Task 5 → Task 6 → Task 7 = ~8 hours serial
+
+**With 3 agents:** ~6 hours wall-clock (RIGHT runs Task 9 in parallel, LEFT handles Task 6 while CENTER does Tasks 3-5)
+
+### Summary Table
+
+| Task | Agent | Hours | Blocks | Verification |
+|---|---|---|---|---|
+| T1: Verify reinsert | LEFT | 0.5 | T2 | Existing tests pass |
+| T2: Refactor state | LEFT | 1.5 | T3,T4,T5,T6 | Existing tests pass, byte-identical outputs |
+| T3: search(budget) | CENTER | 2.5 | T4 | EXPLORED size matches with budget=MAX |
+| T4: extract_next | CENTER | 1.5 | T5 | Manual trace on 2-agent instance |
+| T5: advance/wrapper | CENTER | 0.5 | T6 | n5 instances reach goal |
+| T6: --rt main.cpp | LEFT | 1.5 | T7 | `--rt` flag runs, prints metrics |
+| T7: Tests | RIGHT | 2.5 | T8 | All 6 test categories pass |
+| T8: Benchmarks | RIGHT | 1.5 | — | CSV output comparing modes |
+| T9: Speed-gate opt | RIGHT | 1.5 | — | Fewer constraint nodes, same solutions |
+| **TOTAL** | | **~13** | | |
+
+---
+
+## Part 7: What Can Go Wrong
+
+### Completeness-Breaking Bugs
+
+| Mistake | Symptom | Fix |
+|---|---|---|
+| Clearing EXPLORED between steps | Infinite loops on simple instances | Never clear. Only reset() for new instances. |
+| Clearing OPEN between steps | Re-explores same configs, degrades to HetPIBT | Never clear. |
+| Skipping known configs instead of reinserting | Constraint trees don't advance, stuck | Use reinsert: `OPEN.push(EXPLORED[Q_new])` |
+| Hash/equality excluding kappa | Different speed phases treated as same config | Verify HetConfig hash includes kappa |
+
+### Logic Bugs
+
+| Mistake | Symptom | Fix |
+|---|---|---|
+| extract_next_step returns config >1 step away | Collision validation fails in outer loop | Walk parent pointers correctly, always return immediate child of root |
+| DFS backtracks past current_root, extract confused | Agents oscillate or stay forever | Handle the backtrack case explicitly (return parent config) |
+| latest_generated_ not updated | extract returns stale config | Set `latest_generated_` every time a new node is added to EXPLORED |
+| advance() called with config not in EXPLORED | Crash or dangling pointer | Assert EXPLORED.count(next) before advance |
+
+### Performance Issues
+
+| Issue | Mitigation |
+|---|---|
+| EXPLORED grows too large (memory) | Monitor. For n≤25, should be <100K entries (<20MB). Add a warning at 1M entries. |
+| extract_next_step walks very long parent chain | Cache the path length. If >10,000 nodes deep, consider optimization. |
+| OPEN has many duplicate entries (from reinsert) | This is expected. Duplicates are filtered by the exhaustion check (`tree.empty()`). |
+
+---
+
+## Part 8: How to Validate RT-LaCAM is Correct
+
+### The Definitive Test
+
+Run both modes on every instance in the test suite:
+
+```
+for each instance:
+    result_std = solve(instance)          # standard mode
+    result_rt  = rt_solve(instance)       # RT mode with budget=1
+    
+    assert(result_std.solvable == result_rt.solvable)
+    # RT solution quality may differ, but solvability must match
+```
+
+If this passes on ALL n5, n10, and n25 instances across ALL 4 bottleneck maps (100+ scenarios), RT-LaCAM is correct.
+
+### Quick Smoke Tests (Before Full Suite)
+
+1. **2 agents, open grid, trivial solution:** Both modes solve instantly.
+2. **2 agents, narrow corridor, must coordinate:** RT takes more steps but succeeds.
+3. **Known unsolvable (if any):** Both report NO_SOLUTION.
+4. **n5 bottleneck_doors (100% success in standard):** RT also 100%.
+5. **n10 corridor_speed:** RT matches standard solve rate.
+
+---
+
+## Appendix A: Comparison of Reference Implementations
+
+| Aspect | Python (Rishi-V) | Paper (Liang et al.) | Our C++ Target |
+|---|---|---|---|
+| Language | Python/numpy | Pseudocode | C++17 |
+| Agent type | Homogeneous unit | Homogeneous unit | Heterogeneous (size+speed) |
+| Config generator | Neural network + CS-PIBT | PIBT | HetPIBT |
+| Reroot | No (implicit via persistent state) | Yes (parent pointer reversal) | No (follow Python pattern) |
+| Budget type | Node count (lacamLimit=1) | Time (milliseconds) | Node count (default 1) |
+| Extract method | Return last generated config | Walk parent pointers to root | Walk parent pointers to root |
+| Constraint tree | Python deque of constraint lists | BFS queue of (agent, vertex) | Same as lacam3 (LNode queue) |
+| State hashing | `ndarray.tobytes()` | — | `HetConfig` custom hash (includes kappa) |
+
+## Appendix B: Key Lines in the Python Reference
+
+For agents reading the code at `ML-MAPF-with-Search/main_pys/simulator.py`:
+
+| Line(s) | What It Does |
+|---|---|
+| 286–339 | `LaCAMRunner` class + `HLNode` inner class (= our Solver + HNode) |
+| 293–297 | Constraint tree initialization (deque of constraint lists) |
+| 309–334 | `getNextState()` — pop constraint, expand children, call PIBT |
+| 336–339 | `__init__` — persistent `mainStack` and `stateToHLNodes` |
+| 355–357 | **THE RT MECHANISM:** skip clearing state when `real_time=True` |
+| 359–363 | First-call initialization (create root node) |
+| 369–402 | Main DFS loop — identical for standard and RT |
+| 387–389 | **Reinsert optimization:** known config → push existing node |
+| 401 | Budget check: `if numGenerated >= MAXGENERATED: break` |
+| 404–405 | **RT path extraction:** just return `[current, new_locs]` |
+| 511–512 | Outer loop creates `LaCAMRunner(real_time=True)` |
+| 548–550 | Outer loop calls `lacamRunner.lacam()` each step with `lacamLimit=1` |
+| 564 | Displacement: `new_move = next_locs[1] - cur_locs` |
+| 724–727 | Force `lacamLookahead=1` for RT mode |
+

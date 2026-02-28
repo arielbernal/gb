@@ -14,7 +14,8 @@ HetPIBT::HetPIBT(const Instance *_ins, const DistTable *_D, int seed,
       base_occupied_next(base_size, NO_AGENT),
       max_fleet_vertices(0),
       recent_cells(ins->N),
-      bfs_default_depth(2)
+      bfs_default_depth(2),
+      st_res_(nullptr)
 {
   for (int f = 0; f < ins->num_fleets; ++f) {
     int sz = ins->fleet_graphs[f].size();
@@ -145,6 +146,13 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
   ++_snc_calls;
   int fail_stage = 0;
 
+  // 0. Create ephemeral space-time reservation table for this config call.
+  //    Seeded with Q_from positions at t=0. Used by st_bfs_get_candidates()
+  //    inside funcPIBT. Accumulates reservations as agents are assigned.
+  STReservation st_res(ins, N);
+  st_res.seed_transient(Q_from);
+  st_res_ = &st_res;
+
   // 1. Setup occupancy for current positions
   for (int i = 0; i < N; ++i) {
     mark_base_now(i, Q_from.positions[i]);
@@ -196,6 +204,8 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
       Q_to.positions[i] = stay;
       Q_to.kappa[i] = 0;
       mark_base_next(i, stay);
+      st_res.reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
+      st_res.mark_processed(i);
     }
   }
 
@@ -217,6 +227,8 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
       Q_to.positions[i] = stay;
       Q_to.kappa[i] = (Q_from.kappa[i] + 1) % sp;
       mark_base_next(i, stay);
+      st_res.reserve_stay(i, ins->agents[i].fleet_id, stay->index, 0, 2);
+      st_res.mark_processed(i);
     }
   }
 
@@ -279,6 +291,7 @@ bool HetPIBT::set_new_config(const HetConfig &Q_from, HetConfig &Q_to,
             _snc_fail_step3, _snc_fail_verify);
   }
 
+  st_res_ = nullptr;  // ephemeral table goes out of scope
   return success;
 }
 
@@ -424,21 +437,195 @@ void HetPIBT::bfs_get_candidates(int agent_id, const HetConfig &Q_from,
 }
 
 // ---------------------------------------------------------------------------
+// Space-time BFS candidate generation using reservation table.
+// Explores (time, cell) states, using res.move_collides() to prune edges
+// and res.get_occupants() for congestion/blocker identification.
+// Returns up to 5 ProposedPath candidates sorted by cost.
+// Mirrors hetpibt's get_next_locations() (planner.cpp:131-292).
+// ---------------------------------------------------------------------------
+std::vector<ProposedPath> HetPIBT::st_bfs_get_candidates(
+    int agent_id, STReservation &res, int depth)
+{
+  int fid = ins->agents[agent_id].fleet_id;
+  int cs = ins->fleet_cell_sizes[fid];
+  auto &fg = ins->fleet_graphs[fid];
+
+  auto &ep = res.agent_endpoints[agent_id];
+  if (ep.fleet_id < 0) return {};
+  int start_cell = ep.cell_index;
+
+  // Space-time BFS: (cost, num_blocking, time, cell_index)
+  using Node = std::tuple<int, int, int, int>;
+  std::priority_queue<Node, std::vector<Node>, std::greater<Node>> pq;
+
+  // came_from: pack_key(time, cell) -> pack_key(time, cell) for path reconstruction
+  std::unordered_map<uint64_t, uint64_t> came_from;
+  std::unordered_set<uint64_t> visited;
+
+  const int t0 = 0;  // BFS starts at t=0 (relative to current config)
+  pq.push({0, 0, t0, start_cell});
+  visited.insert(pack_key(t0, start_cell));
+
+  std::vector<ProposedPath> results;
+
+  while (!pq.empty()) {
+    auto [cost, n_block, cur_t, cur_cell] = pq.top();
+    pq.pop();
+
+    // Emit a candidate if we've moved at least one step from the start
+    if (cur_t > t0) {
+      // Reconstruct path from came_from chain
+      std::vector<int> path;
+      uint64_t key = pack_key(cur_t, cur_cell);
+      while (true) {
+        int cell = static_cast<int>(key & 0xFFFFFFFF);
+        path.push_back(cell);
+        auto it = came_from.find(key);
+        if (it == came_from.end()) break;
+        key = it->second;
+      }
+      std::reverse(path.begin(), path.end());
+
+      // Collect blocking agents along the path (parked agents in the way)
+      std::vector<int> blocking;
+      std::unordered_set<int> blocking_set;
+      for (size_t i = 0; i < path.size(); ++i) {
+        int pt = t0 + static_cast<int>(i);
+        auto occupants = res.get_occupants(fid, path[i], pt);
+        for (int occ : occupants) {
+          if (occ == agent_id) continue;
+          if (blocking_set.count(occ)) continue;
+          // Only count as blocking if parked (endpoint at or before this time)
+          auto &occ_ep = res.agent_endpoints[occ];
+          if (occ_ep.fleet_id >= 0 && occ_ep.end_time <= pt) {
+            blocking.push_back(occ);
+            blocking_set.insert(occ);
+          }
+        }
+      }
+
+      // first_step: the cell to move to at t=1 (path[1] if path has >1 entry,
+      // else path[0] for wait-in-place)
+      int fs = (path.size() > 1) ? path[1] : path[0];
+
+      results.push_back({std::move(path), std::move(blocking), fs, cost});
+      if (results.size() >= 15) break;  // collect extra for first_step dedup
+    }
+
+    // Don't expand beyond depth limit
+    if (cur_t - t0 >= depth) continue;
+
+    auto *v = fg.U[cur_cell];
+    if (!v) continue;
+
+    // Expand: wait-in-place first, then shuffled neighbors
+    std::vector<int> next_cells;
+    next_cells.push_back(cur_cell);  // wait in place
+    for (auto *u : v->neighbor) next_cells.push_back(u->index);
+
+    // Shuffle move-neighbors (indices 1..end) for diversity
+    if (next_cells.size() > 2) {
+      std::shuffle(next_cells.begin() + 1, next_cells.end(), MT);
+    }
+
+    for (int nc : next_cells) {
+      int nt = cur_t + 1;
+      uint64_t nkey = pack_key(nt, nc);
+      if (visited.count(nkey)) continue;
+
+      // Prune if move collides with existing reservations
+      if (res.move_collides(fid, cur_cell, nc, cur_t, agent_id)) continue;
+
+      auto *nv = fg.U[nc];
+      if (!nv) continue;
+
+      int h = D->get(agent_id, nv);
+      if (h >= static_cast<int>(fg.V.size())) continue;  // unreachable
+
+      // Count blocking agents at (nc, nt): parked agents in the way
+      int nb = 0;
+      bool goal_blocked = false;
+      auto occupants = res.get_occupants(fid, nc, nt);
+      for (int occ : occupants) {
+        if (occ == agent_id) continue;
+        // Goal-locked agents are hard obstacles — skip this cell entirely
+        if (goal_lock && ins->starts.size() > 0) {
+          auto &occ_ep = res.agent_endpoints[occ];
+          if (occ_ep.fleet_id >= 0) {
+            auto *goal_v = ins->goals[occ];
+            if (goal_v && occ_ep.cell_index == goal_v->index) {
+              goal_blocked = true;
+              break;
+            }
+          }
+        }
+        auto &occ_ep = res.agent_endpoints[occ];
+        if (occ_ep.fleet_id >= 0 && occ_ep.end_time <= nt) ++nb;
+      }
+      if (goal_blocked) continue;
+
+      // Congestion penalty (cap at 3, same as spatial BFS)
+      int congestion = std::min(nb, 3);
+
+      // Oscillation penalty: penalize revisiting recent cells in low-density areas
+      int osc_penalty = 0;
+      if (nb <= 2) {
+        for (int rc : recent_cells[agent_id]) {
+          if (rc == nc) osc_penalty += 2;
+        }
+      }
+
+      visited.insert(nkey);
+      came_from[nkey] = pack_key(cur_t, cur_cell);
+      pq.push({h + congestion + osc_penalty, nb, nt, nc});
+    }
+  }
+
+  // Deduplicate by first_step: keep only the best candidate per distinct
+  // first step (lowest endpoint heuristic). Matches old BFS grouping behavior.
+  std::sort(results.begin(), results.end(),
+            [this, agent_id, &fg](const ProposedPath &a,
+                                   const ProposedPath &b) {
+              auto *va = fg.U[a.path.back()];
+              auto *vb = fg.U[b.path.back()];
+              int da = D->get(agent_id, va);
+              int db = D->get(agent_id, vb);
+              if (da != db) return da < db;
+              return a.blocking_agents.size() < b.blocking_agents.size();
+            });
+
+  std::unordered_set<int> seen_fs;
+  std::vector<ProposedPath> deduped;
+  for (auto &pp : results) {
+    if (seen_fs.insert(pp.first_step).second) {
+      deduped.push_back(std::move(pp));
+    }
+  }
+  results = std::move(deduped);
+
+  // Update costs after sort for consistent ordering info
+  for (size_t i = 0; i < results.size(); ++i) {
+    auto *vend = fg.U[results[i].path.back()];
+    results[i].cost = D->get(agent_id, vend)
+                    + static_cast<int>(results[i].blocking_agents.size());
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Recursive push adapted from hetpibt's push_agent.
 //
-// Key differences from the vanilla funcPIBT this replaces:
-//   - max_depth limit prevents exponential blowup in push chains
-//   - keep_out prevents pushed agents from landing on the pusher's destination
-//   - in_chain prevents circular push loops (explicit set, not just Q_to check)
-//   - Cross-fleet depth scaling: small agents pushed by large agents get
-//     extra recursion depth to escape the larger footprint
-//   - Save/restore of in_chain enables trying alternative candidates
+// Uses space-time BFS candidates (st_bfs_get_candidates) instead of
+// spatial-only BFS. The reservation table (st_res_) is created in
+// set_new_config and accumulates reservations as agents are assigned.
 //
-// What is NOT changed (collision checking stays untouched):
-//   - base_occupied_now / base_occupied_next bitmap model
-//   - base_next_free(), mark_base_next(), clear_base_next()
-//   - check_swap_conflict()
-//   - Kappa (speed-phase) model
+// On success: reserves the agent's multi-step BFS path in st_res_
+// (so subsequent agents' BFS routes around it) and assigns the
+// first step to Q_to (one-step config transition).
+//
+// On push failure: reservations from the failed cascade are NOT undone
+// (Option 3 — matches hetpibt). Q_to and base_occupied_next ARE undone.
 // ---------------------------------------------------------------------------
 bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
                          std::unordered_set<int> &keep_out,
@@ -469,27 +656,32 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
     mark_base_next(i, stay);
     Q_to.positions[i] = stay;
     Q_to.kappa[i] = next_kappa;
+    st_res_->reserve_stay(i, fid_i, stay->index, 0, 2);
+    st_res_->mark_processed(i);
     return true;
   }
 
   in_chain.insert(i);
 
-  // kappa == 0: agent CAN move. Build candidates via BFS lookahead.
+  // kappa == 0: agent CAN move. Build candidates via space-time BFS.
   auto *v_now = Q_from.positions[i];
   int bfs_depth = std::max(bfs_default_depth, cs_i);
-  bfs_get_candidates(i, Q_from, bfs_depth);
 
-  // Sort by BFS cost + tie-breaker
-  std::sort(C_next[i].begin(), C_next[i].end(),
-            [&](Vertex *const a, Vertex *const b) {
-              return tie_breakers[a->id] < tie_breakers[b->id];
-            });
+  // Fix endpoint to match actual position. A prior failed push cascade
+  // may have moved this agent's endpoint to a stale cell.
+  st_res_->agent_endpoints[i] = {fid_i, v_now->index, 0};
 
-  for (auto *u : C_next[i]) {
-    // Footprint collision check on base grid
+  auto candidates = st_bfs_get_candidates(i, *st_res_, bfs_depth);
+
+  for (auto &pp : candidates) {
+    // Convert fleet-cell index to Vertex*
+    auto *u = fg_i.U[pp.first_step];
+    if (!u) continue;
+
+    // Secondary footprint check on base_occupied_next bitmap
     if (!base_next_free(i, u)) continue;
 
-    // Swap conflict check
+    // Swap conflict check (against already-assigned agents in Q_to)
     if (check_swap_conflict(i, v_now, u, Q_from, Q_to)) continue;
 
     // Keep-out check: skip if any base cell of u overlaps keep_out.
@@ -513,7 +705,7 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
     if (u != v_now) {
       auto u_base = to_base_cells(u->index, fg_i.width, cs_i, ins->base_width);
 
-      // Collect all unassigned blockers (deduplicated)
+      // Collect all unassigned blockers from base_occupied_now (deduplicated)
       std::vector<int> blockers;
       for (int bc : u_base) {
         int j = base_occupied_now[bc];
@@ -576,11 +768,16 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
         }
 
         if (!all_pushed) {
-          // Undo ALL assignments made during this cascade
+          // Undo Q_to and base_occupied_next for failed cascade.
+          // Stale st_map entries from failed pushes are left (Option 3),
+          // but endpoints and parked_at_cell are reset to Q_from.
           for (int a : unassigned_before) {
             if (Q_to.positions[a] != nullptr) {
               clear_base_next(a, Q_to.positions[a]);
               Q_to.positions[a] = nullptr;
+              int fid_a = ins->agents[a].fleet_id;
+              st_res_->reset_agent(a, fid_a,
+                                   Q_from.positions[a]->index);
             }
           }
           // Restore in_chain so next candidate can try the same agents
@@ -591,8 +788,10 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
       }
     }
 
-    // All pushes succeeded (or no pushes needed). Mark i's footprint.
+    // All pushes succeeded (or no pushes needed). Mark bitmap and reserve.
     mark_base_next(i, u);
+    st_res_->reserve_path(i, fid_i, 0, pp.path);
+    st_res_->mark_processed(i);
 
     // Kappa model: only advance on actual movement.
     if (u != v_now && sp > 1) {
@@ -612,6 +811,8 @@ bool HetPIBT::funcPIBT(const int i, const HetConfig &Q_from, HetConfig &Q_to,
     mark_base_next(i, v_now);
     Q_to.positions[i] = v_now;
     Q_to.kappa[i] = 0;
+    st_res_->reserve_stay(i, fid_i, v_now->index, 0, 2);
+    st_res_->mark_processed(i);
   }
   // If not free, leave Q_to.positions[i] as nullptr — caller handles it.
   return false;

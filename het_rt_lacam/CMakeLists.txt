@@ -16,6 +16,7 @@ add_executable(test_all
   tests/test_instance.cpp
   tests/test_pibt.cpp
   tests/test_planner.cpp
+  tests/test_st_reservation.cpp
 )
 target_link_libraries(test_all het_rt_lacam gtest_main)
 enable_testing()
