@@ -1,4 +1,5 @@
 #include "../include/planner.hpp"
+#include "../include/refiner.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -10,6 +11,8 @@ bool Planner::FLG_MULTI_THREAD = false;
 bool Planner::FLG_ST_BFS = true;  // space-time BFS by default
 float Planner::RANDOM_INSERT_PROB1 = 0.0;
 float Planner::RANDOM_INSERT_PROB2 = 0.0;
+bool Planner::FLG_REFINER = true;
+int Planner::REFINER_NUM = 4;
 
 std::string Planner::MSG;
 int Planner::CHECKPOINTS_DURATION = 5000;
@@ -128,6 +131,15 @@ Solution Planner::solve()
   auto solution = backtrack(H_goal);
   for (auto &p : EXPLORED) delete p.second;
   EXPLORED.clear();  // prevent double-free in destructor
+
+  // Iterative refinement: single-fleet mode only, runs with remaining budget
+  if (FLG_REFINER && ins->num_fleets == 1 && !solution.empty()) {
+    for (int r = 0; !is_expired(deadline); ++r) {
+      auto refined = refine(ins, deadline, solution, D, seed + r, verbose);
+      if (!refined.empty()) solution = refined;
+    }
+  }
+
   return solution;
 }
 
@@ -434,8 +446,17 @@ void Planner::advance(const HetConfig &next)
 
 HetConfig Planner::solve_one_step(int node_budget)
 {
-  search(node_budget);
-  auto next = extract_next_step();
-  advance(next);
-  return next;
+  auto *before = latest_generated_;
+  auto status = search(node_budget);
+
+  // Only advance when search discovered at least one new config.
+  // If no progress, stay in place and let constraints escalate.
+  if (status == SearchStatus::GOAL_FOUND ||
+      (latest_generated_ != nullptr && latest_generated_ != before)) {
+    auto next = extract_next_step();
+    advance(next);
+    return next;
+  }
+
+  return current_root_->C;
 }

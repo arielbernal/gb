@@ -56,3 +56,29 @@ int get_sum_of_costs_lower_bound(const Instance &ins, DistTable &dist_table)
   }
   return c;
 }
+
+int get_path_cost(const Path &path)
+{
+  const auto g = path.back();
+  auto c = path.size();
+  while (c > 0 && path[c - 1] == g) --c;
+  return c;
+}
+
+int get_path_loss(const Path &path)
+{
+  const auto g = path.back();
+  const auto T = path.size();
+  auto c = 0;
+  for (size_t t = 1; t < T; ++t) {
+    if (path[t - 1] != g || path[t] != g) ++c;
+  }
+  return c;
+}
+
+int get_sum_of_loss_paths(const std::vector<Path> &paths)
+{
+  auto c = 0;
+  for (auto &&p : paths) c += get_path_loss(p);
+  return c;
+}

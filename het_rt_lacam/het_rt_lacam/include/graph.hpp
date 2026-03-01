@@ -20,6 +20,8 @@ struct Vertex {
 };
 using Vertices = std::vector<Vertex *>;
 using Config = std::vector<Vertex *>;  // locations for all agents
+using Path = std::vector<Vertex *>;
+using Paths = std::vector<Path>;
 
 // ---------------------------------------------------------------------------
 // HetConfig: configuration augmented with speed-phase counters

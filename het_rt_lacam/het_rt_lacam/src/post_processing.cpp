@@ -120,12 +120,18 @@ static const std::regex r_map_name = std::regex(R"(.+/(.+))");
 
 void make_log(const Instance &ins, const Solution &solution,
               const std::string &output_name, const double comp_time_ms,
-              const std::string &map_name, const int seed, const bool log_short)
+              const std::string &map_name, const int seed, const bool log_short,
+              const std::string &result_status)
 {
   std::smatch results;
   const auto map_recorded_name =
       (std::regex_match(map_name, results, r_map_name)) ? results[1].str()
                                                         : map_name;
+
+  // Determine solved: if result_status is provided, use it; otherwise fall back
+  // to !solution.empty() for backward compatibility with standard mode.
+  const bool solved = result_status.empty() ? !solution.empty()
+                                            : (result_status == "success");
 
   auto D = DistTable(&ins);
   std::ofstream log;
@@ -133,7 +139,10 @@ void make_log(const Instance &ins, const Solution &solution,
   log << "agents=" << ins.N << "\n";
   log << "map_file=" << map_recorded_name << "\n";
   log << "solver=het_rt_lacam\n";
-  log << "solved=" << !solution.empty() << "\n";
+  log << "solved=" << solved << "\n";
+  if (!result_status.empty()) {
+    log << "result=" << result_status << "\n";
+  }
   log << "soc=" << get_sum_of_costs(solution) << "\n";
   log << "soc_lb=" << get_sum_of_costs_lower_bound(ins, D) << "\n";
   log << "makespan=" << get_makespan(solution) << "\n";

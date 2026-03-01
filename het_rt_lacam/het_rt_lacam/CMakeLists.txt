@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 add_library(het_rt_lacam STATIC
+  src/collision_table.cpp
   src/dist_table.cpp
   src/graph.cpp
   src/heuristic.cpp
@@ -12,7 +13,10 @@ add_library(het_rt_lacam STATIC
   src/pibt.cpp
   src/planner.cpp
   src/post_processing.cpp
+  src/refiner.cpp
+  src/sipp.cpp
   src/st_reservation.cpp
+  src/translator.cpp
   src/utils.cpp
 )
 

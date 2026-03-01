@@ -69,6 +69,10 @@ int main(int argc, char *argv[])
       .help("use spatial-only BFS instead of space-time BFS")
       .default_value(false)
       .implicit_value(true);
+  program.add_argument("--no-refiner")
+      .help("disable iterative refinement (single-fleet only)")
+      .default_value(false)
+      .implicit_value(true);
   try {
     program.parse_known_args(argc, argv);
   } catch (const std::runtime_error &err) {
@@ -122,6 +126,7 @@ int main(int argc, char *argv[])
       std::stof(program.get<std::string>("checkpoints-duration")) * 1000;
 
   Planner::FLG_ST_BFS = !program.get<bool>("no-st-bfs");
+  Planner::FLG_REFINER = !program.get<bool>("no-refiner");
   const auto rt_mode = program.get<bool>("rt");
   const auto rt_budget = std::stoi(program.get<std::string>("rt-budget"));
 
@@ -151,13 +156,31 @@ int main(int argc, char *argv[])
     const auto comp_time_ms = deadline.elapsed_ms();
     const int steps_executed = (int)executed.size() - 1;
 
+    // Count stay vs move steps
+    int stay_steps = 0, move_steps = 0;
+    for (int s = 1; s < (int)executed.size(); ++s) {
+      bool same = true;
+      for (size_t a = 0; a < ins.N; ++a) {
+        if (executed[s].positions[a] != executed[s-1].positions[a]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) ++stay_steps; else ++move_steps;
+    }
+
+    std::string rt_result;
     if (goal_reached) {
+      rt_result = "success";
       info(1, verbose, &deadline, "RT: goal reached in ", steps_executed,
            " steps");
     } else {
+      rt_result = "timeout";
       info(1, verbose, &deadline, "RT: timeout after ", steps_executed,
            " steps");
     }
+    info(1, verbose, &deadline, "RT: move=", move_steps, " stay=", stay_steps,
+         " explored=", planner.EXPLORED.size());
 
     // Convert executed HetConfig path to Solution (vector<Config>)
     Solution solution;
@@ -171,7 +194,7 @@ int main(int argc, char *argv[])
 
     print_stats(verbose, &deadline, ins, solution, comp_time_ms);
     make_log(ins, solution, output_name, comp_time_ms, map_name, seed,
-             log_short);
+             log_short, rt_result);
   } else {
     // Standard (full-horizon) solve
     const auto solution = solve(ins, verbose - 1, &deadline, seed);
